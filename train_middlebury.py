@@ -110,15 +110,17 @@ def main(cfg):
     logger = get_logger(__name__)
     Path(cfg.save_path).mkdir(exist_ok=True, parents=True)
     kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
-    accelerator = Accelerator(mixed_precision='bf16', dataloader_config=DataLoaderConfiguration(use_seedable_sampler=True), log_with='wandb', kwargs_handlers=[kwargs], step_scheduler_with_optimizer=False)
-    accelerator.init_trackers(project_name=cfg.project_name, config=OmegaConf.to_container(cfg, resolve=True), init_kwargs={'wandb': cfg.wandb})
+    # accelerator = Accelerator(mixed_precision='bf16', dataloader_config=DataLoaderConfiguration(use_seedable_sampler=True), log_with='wandb', kwargs_handlers=[kwargs], step_scheduler_with_optimizer=False)
+    # accelerator.init_trackers(project_name=cfg.project_name, config=OmegaConf.to_container(cfg, resolve=True), init_kwargs={'wandb': cfg.wandb})
+    accelerator = Accelerator(mixed_precision='bf16', dataloader_config=DataLoaderConfiguration(use_seedable_sampler=True), log_with='tensorboard', kwargs_handlers=[kwargs], step_scheduler_with_optimizer=False, project_dir="./logs")
+    accelerator.init_trackers(project_name=cfg.project_name)
 
     train_dataset = datasets.fetch_dataloader(cfg)
     train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=cfg.batch_size//cfg.num_gpu,
         pin_memory=True, shuffle=True, num_workers=int(4), drop_last=True)
 
     aug_params = {}
-    val_dataset = datasets.Middlebury(aug_params, split='MiddEval3', resolution='F')
+    val_dataset = datasets.Middlebury(aug_params, split='MiddEval3', resolution='H')
 
 
     val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=int(1),
@@ -146,7 +148,8 @@ def main(cfg):
     while should_keep_training:
         active_train_loader = train_loader
         model.train()
-        model.module.freeze_bn()
+        # model.module.freeze_bn()
+        model.freeze_bn()
         for data in tqdm(active_train_loader, dynamic_ncols=True, disable=not accelerator.is_main_process):
             _, left, right, disp_gt, valid = [x for x in data]
             with accelerator.autocast():
@@ -181,9 +184,9 @@ def main(cfg):
                 disp_preds_np = gray_2_colormap_np(disp_preds[-1][0].squeeze())
                 disp_gt_np = gray_2_colormap_np(disp_gt[0].squeeze())
                 
-                accelerator.log({"disp_pred": wandb.Image(disp_preds_np, caption="step:{}".format(total_step))}, total_step)
-                accelerator.log({"disp_gt": wandb.Image(disp_gt_np, caption="step:{}".format(total_step))}, total_step)
-                accelerator.log({"depth_mono": wandb.Image(depth_mono_np, caption="step:{}".format(total_step))}, total_step)
+                # accelerator.log({"disp_pred": wandb.Image(disp_preds_np, caption="step:{}".format(total_step))}, total_step)
+                # accelerator.log({"disp_gt": wandb.Image(disp_gt_np, caption="step:{}".format(total_step))}, total_step)
+                # accelerator.log({"depth_mono": wandb.Image(depth_mono_np, caption="step:{}".format(total_step))}, total_step)
             if (total_step > 0) and (total_step % cfg.save_frequency == 0):
                 if accelerator.is_main_process:
                     save_path = Path(cfg.save_path + '/%d.pth' % (total_step))
@@ -192,7 +195,7 @@ def main(cfg):
                     del model_save
 
 
-            if (total_step > 0) and (total_step % cfg.val_frequency == 0):
+            if ((total_step > 0) and (total_step % cfg.val_frequency == 0)) or (total_step == 1):
                 torch.cuda.empty_cache()
                 model.eval()
                 elem_num, total_epe, total_out = 0, 0, 0
@@ -209,14 +212,18 @@ def main(cfg):
                     epe = torch.squeeze(epe, dim=1)
                     out = torch.squeeze(out, dim=1)
                     epe, out = accelerator.gather_for_metrics((epe[valid >= 0.5].mean(), out[valid >= 0.5].mean()))
-                    elem_num += epe.shape[0]
-                    for i in range(epe.shape[0]):
-                        total_epe += epe[i]
-                        total_out += out[i]
-                    accelerator.log({'val/epe': total_epe / elem_num, 'val/d1': 100 * total_out / elem_num}, total_step)
+                    # elem_num += epe.shape[0]
+                    # for i in range(epe.shape[0]):
+                    #     total_epe += epe[i]
+                    #     total_out += out[i]
+                    elem_num += 1
+                    total_epe += epe
+                    total_out += out
+                accelerator.log({'val/epe': total_epe / elem_num, 'val/d1': 100 * total_out / elem_num}, total_step)
 
                 model.train()
-                model.module.freeze_bn()
+                # model.module.freeze_bn()
+                model.freeze_bn()
                 torch.cuda.empty_cache()
             
             if total_step % int(100) == 0:
