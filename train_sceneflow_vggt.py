@@ -3,7 +3,6 @@ import hydra
 import torch
 from tqdm import tqdm
 import torch.optim as optim
-# from util import InputPadder
 from core.utils.utils import InputPadder
 from core.monster import Monster 
 from omegaconf import OmegaConf
@@ -15,12 +14,27 @@ from accelerate.logging import get_logger
 from accelerate import DataLoaderConfiguration
 from accelerate.utils import DistributedDataParallelKwargs
 
+from core.vggt_stereo import VGGTStereoRegression, disparity_loss
 
 import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import wandb
 from pathlib import Path
+
+def check_nan(layer, input, output):
+    if isinstance(output, tuple):  # 检查是否为元组
+        output = output[1][-1]
+    if torch.isnan(output).any():
+        print(f"NaN detected in {layer.__class__.__name__}")
+
+def check_nan_grad(layer, grad_input, grad_output):
+    if isinstance(grad_input, tuple):  # 检查是否为元组
+        grad_input = grad_input[0]
+    if torch.isnan(grad_input).any():
+        print(f"NaN detected in gradient of {layer.__class__.__name__}")
+
+
 
 def gray_2_colormap_np(img, cmap = 'rainbow', max = None):
     img = img.cpu().detach().numpy().squeeze()
@@ -78,20 +92,20 @@ def sequence_loss(disp_preds, disp_init_pred, disp_gt, valid, loss_gamma=0.9, ma
 
 def fetch_optimizer(args, model):
     """ Create the optimizer and learning rate scheduler """
-    DPT_params = list(map(id, model.feat_decoder.parameters())) 
-    rest_params = filter(lambda x:id(x) not in DPT_params and x.requires_grad, model.parameters())
+    vit_params = list(map(id, model.aggregator.patch_embed.parameters())) 
+    rest_params = filter(lambda x:id(x) not in vit_params and x.requires_grad, model.parameters())
 
-    params_dict = [{'params': model.feat_decoder.parameters(), 'lr': args.lr/2.0}, 
+    params_dict = [{'params': model.aggregator.patch_embed.parameters(), 'lr': args.lr/10.0}, 
                    {'params': rest_params, 'lr': args.lr}, ]
     optimizer = optim.AdamW(params_dict, lr=args.lr, weight_decay=args.wdecay, eps=1e-8)
 
-    scheduler = optim.lr_scheduler.OneCycleLR(optimizer, [args.lr/2.0, args.lr], args.total_step+100,
+    scheduler = optim.lr_scheduler.OneCycleLR(optimizer, [args.lr/10.0, args.lr], args.total_step+100,
             pct_start=0.01, cycle_momentum=False, anneal_strategy='linear')
 
 
     return optimizer, scheduler
 
-@hydra.main(version_base=None, config_path='config', config_name='train_sceneflow')
+@hydra.main(version_base=None, config_path='config', config_name='train_sceneflow_vggt')
 def main(cfg):
     set_seed(cfg.seed)
     logger = get_logger(__name__)
@@ -107,11 +121,15 @@ def main(cfg):
         pin_memory=True, shuffle=True, num_workers=int(4), drop_last=True)
 
     aug_params = {}
+    # val_dataset = datasets.Middlebury(aug_params, split='MiddEval3', resolution='H')
     val_dataset = datasets.SceneFlowDatasets(dstype='frames_finalpass', things_test=True)
-    val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=8, pin_memory=True, shuffle=False, num_workers=8, drop_last=False)
 
-    model = Monster(cfg)
-    if not cfg.restore_ckpt.endswith("None"):
+    val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=int(1),
+        pin_memory=True, shuffle=False, num_workers=int(4), drop_last=False)
+
+    # model = Monster(cfg)
+    model = VGGTStereoRegression(img_size=cfg.image_size)
+    if cfg.restore_ckpt is not None:
         assert cfg.restore_ckpt.endswith(".pth")
         print(f"Loading checkpoint from {cfg.restore_ckpt}")
         assert os.path.exists(cfg.restore_ckpt)
@@ -121,10 +139,9 @@ def main(cfg):
             checkpoint = checkpoint['state_dict']
         for key in checkpoint:
             ckpt[key.replace('module.', '')] = checkpoint[key]
-
         model.load_state_dict(ckpt, strict=True)
         print(f"Loaded checkpoint from {cfg.restore_ckpt} successfully")
-        del ckpt, checkpoint
+    del ckpt, checkpoint
     optimizer, lr_scheduler = fetch_optimizer(cfg, model)
     train_loader, model, optimizer, lr_scheduler, val_loader = accelerator.prepare(train_loader, model, optimizer, lr_scheduler, val_loader)
     model.to(accelerator.device)
@@ -133,15 +150,16 @@ def main(cfg):
     should_keep_training = True
     while should_keep_training:
         active_train_loader = train_loader
-
         model.train()
         # model.module.freeze_bn()
         model.freeze_bn()
         for data in tqdm(active_train_loader, dynamic_ncols=True, disable=not accelerator.is_main_process):
             _, left, right, disp_gt, valid = [x for x in data]
+            left_right = torch.stack([left, right], dim=1)
             with accelerator.autocast():
-                disp_init_pred, disp_preds, depth_mono = model(left, right, iters=cfg.train_iters)
-            loss, metrics = sequence_loss(disp_preds, disp_init_pred, disp_gt, valid, max_disp=cfg.max_disp)
+                # disp_init_pred, disp_preds, depth_mono = model(left, right, iters=cfg.train_iters)
+                predictions = model(left_right)
+            loss, metrics = disparity_loss(predictions, disp_gt, valid, max_disp=cfg.max_disp)
             accelerator.backward(loss)
             accelerator.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
@@ -174,20 +192,16 @@ def main(cfg):
                 # accelerator.log({"disp_pred": wandb.Image(disp_preds_np, caption="step:{}".format(total_step))}, total_step)
                 # accelerator.log({"disp_gt": wandb.Image(disp_gt_np, caption="step:{}".format(total_step))}, total_step)
                 # accelerator.log({"depth_mono": wandb.Image(depth_mono_np, caption="step:{}".format(total_step))}, total_step)
-
-                accelerator.log({"disp_pred": disp_preds_np}, total_step)
-                accelerator.log({"disp_gt": disp_gt_np}, total_step)
-                accelerator.log({"depth_mono": depth_mono_np}, total_step)
-
             if (total_step > 0) and (total_step % cfg.save_frequency == 0):
                 if accelerator.is_main_process:
                     save_path = Path(cfg.save_path + '/%d.pth' % (total_step))
                     model_save = accelerator.unwrap_model(model)
                     torch.save(model_save.state_dict(), save_path)
                     del model_save
-        
-            if (total_step > 0) and (total_step % cfg.val_frequency == 0):
 
+
+            if ((total_step > 0) and (total_step % cfg.val_frequency == 0)) or (total_step == 1):
+                torch.cuda.empty_cache()
                 model.eval()
                 elem_num, total_epe, total_out = 0, 0, 0
                 for data in tqdm(val_loader, dynamic_ncols=True, disable=not accelerator.is_main_process):
@@ -199,11 +213,10 @@ def main(cfg):
                     disp_pred = padder.unpad(disp_pred)
                     assert disp_pred.shape == disp_gt.shape, (disp_pred.shape, disp_gt.shape)
                     epe = torch.abs(disp_pred - disp_gt)
-                    out = (epe > 1.0).float()
+                    out = (epe > 2.0).float()
                     epe = torch.squeeze(epe, dim=1)
                     out = torch.squeeze(out, dim=1)
-                    disp_gt = torch.squeeze(disp_gt, dim=1)
-                    epe, out = accelerator.gather_for_metrics((epe[(valid >= 0.5) & (disp_gt.abs() < 192)].mean(), out[(valid >= 0.5) & (disp_gt.abs() < 192)].mean()))
+                    epe, out = accelerator.gather_for_metrics((epe[valid >= 0.5].mean(), out[valid >= 0.5].mean()))
                     # elem_num += epe.shape[0]
                     # for i in range(epe.shape[0]):
                     #     total_epe += epe[i]
@@ -211,11 +224,15 @@ def main(cfg):
                     elem_num += 1
                     total_epe += epe
                     total_out += out
-                    accelerator.log({'val/epe': total_epe / elem_num, 'val/d1': 100 * total_out / elem_num}, total_step)
+                accelerator.log({'val/epe': total_epe / elem_num, 'val/d1': 100 * total_out / elem_num}, total_step)
 
                 model.train()
                 # model.module.freeze_bn()
                 model.freeze_bn()
+                torch.cuda.empty_cache()
+            
+            if total_step % int(100) == 0:
+                torch.cuda.empty_cache()  
 
             if total_step == cfg.total_step:
                 should_keep_training = False
