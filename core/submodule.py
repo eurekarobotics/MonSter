@@ -1,3 +1,4 @@
+import re
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -169,6 +170,25 @@ def build_gwc_volume(refimg_fea, targetimg_fea, maxdisp, num_groups):
     return volume
         
 
+def build_gwc_volume_onnx(refimg_fea, targetimg_fea, maxdisp, num_groups):
+    B, C, H, W = refimg_fea.shape
+    volume = refimg_fea.new_zeros([B, num_groups, maxdisp, H, W])
+    
+    # Handle disparity 0 case
+    volume[:, :, 0, :, :] = groupwise_correlation(refimg_fea, targetimg_fea, num_groups)
+    
+    # Handle disparity > 0 cases using padding and slicing
+    maxdisp = min(maxdisp, W)  # Ensure maxdisp does not exceed width
+    for i in range(1, maxdisp):
+        shifted_ref = refimg_fea[:, :, :, i:]
+        shifted_target = targetimg_fea[:, :, :, :-i]
+        padded_ref = F.pad(shifted_ref, (0, i, 0, 0), mode='constant', value=0)
+        padded_target = F.pad(shifted_target, (0, i, 0, 0), mode='constant', value=0)
+        corr = groupwise_correlation(padded_ref, padded_target, num_groups)
+        volume[:, :, i, :, i:] = corr[:, :, :, :-i]
+    
+    volume = volume.contiguous()
+    return volume
 
 
 def norm_correlation(fea1, fea2):
