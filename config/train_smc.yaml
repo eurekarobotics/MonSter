@@ -1,30 +1,32 @@
 wandb: {}
-project_name: middlebury
+project_name: smc
 restore_ckpt: "./sceneflow.pth"
 # restore_ckpt: "/data2/cjd/mono_fusion/checkpoints/sceneflow.pth"
-logdir: './checkpoints/middlebury/'
+logdir: './checkpoints/smc/'
 encoder: 'vits'
 batch_size: 2
-train_datasets: ['middlebury_finetune']
+# train_datasets: ['middlebury_finetune']
+train_datasets: ['smc']
 lr: 1e-4
 wdecay: 1e-5
 total_step: 100000
+# save_frequency: 20
 save_frequency: 1000
-save_path: './checkpoints/middlebury/'
+save_path: './checkpoints/smc/'
+# val_frequency: 20
 val_frequency: 1000
 # image_size: [352, 896]
 image_size: [480, 640]
 train_iters: 20
 valid_iters: 32
-val_dataset: 'kitti'
+val_dataset: 'smc'
 corr_implementation: "reg"
 corr_levels: 2
 corr_radius: 4
 n_downsample: 2
 n_gru_layers: 3
 hidden_dims: [128, 128, 128]
-# max_disp: 768
-max_disp: 576
+max_disp: 768
 saturation_range: [0.0, 1.4]
 do_flip: False
 spatial_scale: [-0.2, 0.4]

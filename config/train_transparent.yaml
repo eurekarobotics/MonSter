@@ -1,16 +1,16 @@
 wandb: {}
-project_name: middlebury
-restore_ckpt: "./sceneflow.pth"
+project_name: transparent
+restore_ckpt: "./checkpoints/middlebury/53000.pth"
 # restore_ckpt: "/data2/cjd/mono_fusion/checkpoints/sceneflow.pth"
-logdir: './checkpoints/middlebury/'
+logdir: './checkpoints/transparent/'
 encoder: 'vits'
 batch_size: 2
-train_datasets: ['middlebury_finetune']
+train_datasets: ['transparent']
 lr: 1e-4
 wdecay: 1e-5
 total_step: 100000
 save_frequency: 1000
-save_path: './checkpoints/middlebury/'
+save_path: './checkpoints/transparent/'
 val_frequency: 1000
 # image_size: [352, 896]
 image_size: [480, 640]
