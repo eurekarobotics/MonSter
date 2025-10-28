@@ -1,3 +1,23 @@
+# Eureka version
+
+## Usage
+
+- Single GPU training:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 accelerate launch train_something.py
+```
+
+- Multi GPU training:
+
+```bash
+NCCL_P2P_DISABLE=1 CUDA_VISIBLE_DEVICES=0,1 accelerate launch train_something.py
+```
+
+- Evaluation: See `evaluate_stereo.py` for details.
+- Export to ONNX: See `export_onnx.py` for details.
+- Find optimal number of iterations for exporting: See `find_best_iter.py` for details.
+
 # 🚀 MonSter (CVPR 2025 Highlight) 🚀 
 
 <p align="center">
