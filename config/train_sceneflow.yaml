@@ -3,7 +3,7 @@ project_name: sceneflow
 restore_ckpt: None
 logdir: './checkpoints/sceneflow/'
 encoder: 'dinov3_vitl14'
-batch_size: 3
+batch_size: 2
 train_datasets: ['sceneflow']
 lr: 2e-4
 wdecay: 1e-5

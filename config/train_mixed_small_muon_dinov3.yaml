@@ -1,0 +1,34 @@
+wandb: {}
+project_name: mixed-small-muon
+restore_ckpt: None
+logdir: './checkpoints/mixed-small-muon/'
+encoder: 'dinov3_vitl14'
+batch_size: 2
+gradient_accumulation_steps: 2
+train_datasets: ['mixed']
+lr: 5e-5
+wdecay: 1e-5
+total_step: 400000
+save_frequency: 1000
+save_path: './checkpoints/mixed-small-muon/'
+val_frequency: 1000
+# image_size: [352, 896]
+image_size: [480, 640]
+# image_size: [608, 800]
+train_iters: 20
+valid_iters: 32
+val_dataset: 'kitti'
+corr_implementation: "reg"
+corr_levels: 2
+corr_radius: 4
+n_downsample: 2
+n_gru_layers: 3
+hidden_dims: [128, 128, 128]
+# max_disp: 768
+max_disp: 576
+saturation_range: [0.0, 1.4]
+do_flip: True
+spatial_scale: [-0.2, 0.4]
+noyjitter: False
+num_gpu: 1
+seed: 666
