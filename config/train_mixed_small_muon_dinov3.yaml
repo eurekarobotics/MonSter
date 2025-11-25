@@ -1,7 +1,7 @@
 wandb: {}
 project_name: mixed-small-muon
 restore_ckpt: None
-logdir: './checkpoints/mixed-small-muon/'
+logdir: './checkpoints/mixed-small-muon-dinov3/'
 encoder: 'dinov3_vitl14'
 batch_size: 2
 gradient_accumulation_steps: 2
@@ -30,5 +30,5 @@ saturation_range: [0.0, 1.4]
 do_flip: True
 spatial_scale: [-0.2, 0.4]
 noyjitter: False
-num_gpu: 1
+num_gpu: 2
 seed: 666
