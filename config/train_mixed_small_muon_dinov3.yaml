@@ -1,6 +1,6 @@
 wandb: {}
 project_name: mixed-small-muon
-restore_ckpt: None
+restore_ckpt: null
 logdir: './checkpoints/mixed-small-muon-dinov3/'
 encoder: 'dinov3_vitl14'
 batch_size: 2
@@ -10,7 +10,7 @@ lr: 5e-5
 wdecay: 1e-5
 total_step: 400000
 save_frequency: 1000
-save_path: './checkpoints/mixed-small-muon/'
+save_path: './checkpoints/mixed-small-muon-dinov3/'
 val_frequency: 1000
 # image_size: [352, 896]
 image_size: [480, 640]
