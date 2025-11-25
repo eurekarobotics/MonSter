@@ -1,19 +1,20 @@
 wandb: {}
-project_name: middlebury
-restore_ckpt: "./sceneflow.pth"
-# restore_ckpt: "/data2/cjd/mono_fusion/checkpoints/sceneflow.pth"
-logdir: './checkpoints/middlebury/'
+project_name: mixed-small
+restore_ckpt: "./checkpoints/middlebury/53000.pth"
+logdir: './checkpoints/mixed-small/'
 encoder: 'vits'
 batch_size: 2
-train_datasets: ['middlebury_finetune']
-lr: 1e-4
+gradient_accumulation_steps: 2
+train_datasets: ['mixed']
+lr: 5e-5
 wdecay: 1e-5
-total_step: 100000
-save_frequency: 1000
-save_path: './checkpoints/middlebury/'
+total_step: 400000
+save_frequency: 2000
+save_path: './checkpoints/mixed-small/'
 val_frequency: 1000
 # image_size: [352, 896]
 image_size: [480, 640]
+# image_size: [608, 800]
 train_iters: 20
 valid_iters: 32
 val_dataset: 'kitti'
@@ -26,8 +27,8 @@ hidden_dims: [128, 128, 128]
 # max_disp: 768
 max_disp: 576
 saturation_range: [0.0, 1.4]
-do_flip: False
+do_flip: True
 spatial_scale: [-0.2, 0.4]
-noyjitter: True
+noyjitter: False
 num_gpu: 1
 seed: 666

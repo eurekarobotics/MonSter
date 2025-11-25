@@ -26,5 +26,5 @@ saturation_range: [0.7, 1.3]
 do_flip: False
 spatial_scale: [-0.2, 0.5]
 noyjitter: True
-num_gpu: 4
+num_gpu: 1
 seed: 666

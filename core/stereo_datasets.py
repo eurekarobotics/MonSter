@@ -11,6 +11,11 @@ import random
 from pathlib import Path
 from glob import glob
 import os.path as osp
+import pathlib
+import json
+import yaml
+import cv2
+import functools
 
 import sys
 sys.path.append(os.getcwd())
@@ -126,7 +131,7 @@ class StereoDataset(data.Dataset):
 
 
 class SceneFlowDatasets(StereoDataset):
-    def __init__(self, aug_params=None, root='/data2/cjd/StereoDatasets/sceneflow', dstype='frames_finalpass', things_test=False):
+    def __init__(self, aug_params=None, root='/home/duy/datasets/SceneFlow', dstype='frames_finalpass', things_test=False):
         super(SceneFlowDatasets, self).__init__(aug_params)
         assert os.path.exists(root)
         self.root = root
@@ -144,6 +149,7 @@ class SceneFlowDatasets(StereoDataset):
 
         original_length = len(self.disparity_list)
         root = self.root
+        root = osp.join(self.root, 'FlyingThings3D')
         # left_images = sorted( glob(osp.join(root, self.dstype, split, '*/*/left/*.png')) )
         # right_images = [ im.replace('left', 'right') for im in left_images ]
         right_images = sorted( glob(osp.join(root, self.dstype, split, '*/*/right/*.png')) )
@@ -160,11 +166,12 @@ class SceneFlowDatasets(StereoDataset):
 
         original_length = len(self.disparity_list)
         root = self.root
+        root = osp.join(self.root, 'Monkaa')
         # left_images = sorted( glob(osp.join(root, self.dstype, split, '*/left/*.png')) )
         # right_images = [ image_file.replace('left', 'right') for image_file in left_images ]
-        right_images = sorted( glob(osp.join(root, self.dstype, split, '*/*/right/*.png')) )
+        right_images = sorted( glob(osp.join(root, '*/right/*.png')) )
         left_images = [ im.replace('right', 'left') for im in right_images ]
-        disparity_images = [ im.replace(self.dstype, 'disparity').replace('.png', '.pfm') for im in left_images ]
+        disparity_images = [ im.replace('Monkaa', 'disparity').replace('.png', '.pfm') for im in left_images ]
 
         for img1, img2, disp in zip(left_images, right_images, disparity_images):
             self.image_list += [ [img1, img2] ]
@@ -177,9 +184,10 @@ class SceneFlowDatasets(StereoDataset):
 
         original_length = len(self.disparity_list)
         root = self.root
+        root = osp.join(self.root, 'Driving')
         # left_images = sorted( glob(osp.join(root, self.dstype, split, '*/*/*/left/*.png')) )
         # right_images = [ image_file.replace('left', 'right') for image_file in left_images ]
-        right_images = sorted( glob(osp.join(root, self.dstype, split, '*/*/right/*.png')) )
+        right_images = sorted( glob(osp.join(root, self.dstype, '*/*/*/right/*.png')) )
         left_images = [ im.replace('right', 'left') for im in right_images ]
         disparity_images = [ im.replace(self.dstype, 'disparity').replace('.png', '.pfm') for im in left_images ]
 
@@ -203,7 +211,7 @@ class ETH3D(StereoDataset):
             self.disparity_list += [ disp ]
 
 class SintelStereo(StereoDataset):
-    def __init__(self, aug_params=None, root='datasets/SintelStereo'):
+    def __init__(self, aug_params=None, root='/home/duy/datasets/SintelStereo'):
         super().__init__(aug_params, sparse=True, reader=frame_utils.readDispSintelStereo)
 
         image1_list = sorted( glob(osp.join(root, 'training/*_left/*/frame_*.png')) )
@@ -216,7 +224,7 @@ class SintelStereo(StereoDataset):
             self.disparity_list += [ disp ]
 
 class FallingThings(StereoDataset):
-    def __init__(self, aug_params=None, root='/data2/cjd/data_wxq/fallingthings'):
+    def __init__(self, aug_params=None, root='/home/duy/datasets/FallingThings'):
         super().__init__(aug_params, reader=frame_utils.readDispFallingThings)
         assert os.path.exists(root)
 
@@ -235,19 +243,29 @@ class FallingThings(StereoDataset):
             self.disparity_list += [ disp ]
 
 class TartanAir(StereoDataset):
-    def __init__(self, aug_params=None, root='datasets', keywords=[]):
+    def __init__(self, aug_params=None, root='/home/duy/datasets/TartanAir', keywords=[]):
         super().__init__(aug_params, reader=frame_utils.readDispTartanAir)
         assert os.path.exists(root)
 
-        with open(os.path.join(root, 'tartanair_filenames.txt'), 'r') as f:
-            filenames = sorted(list(filter(lambda s: 'seasonsforest_winter/Easy' not in s, f.read().splitlines())))
-            for kw in keywords:
-                filenames = sorted(list(filter(lambda s: kw in s.lower(), filenames)))
+        # with open(os.path.join(root, 'tartanair_filenames.txt'), 'r') as f:
+        #     filenames = sorted(list(filter(lambda s: 'seasonsforest_winter/Easy' not in s, f.read().splitlines())))
+        #     for kw in keywords:
+        #         filenames = sorted(list(filter(lambda s: kw in s.lower(), filenames)))
+        #
+        # image1_list = [osp.join(root, e) for e in filenames]
+        # image2_list = [osp.join(root, e.replace('_left', '_right')) for e in filenames]
+        # disp_list = [osp.join(root, e.replace('image_left', 'depth_left').replace('left.png', 'left_depth.npy')) for e in filenames]
+        #
+        # for img1, img2, disp in zip(image1_list, image2_list, disp_list):
+        #     self.image_list += [ [img1, img2] ]
+        #     self.disparity_list += [ disp ]
 
-        image1_list = [osp.join(root, e) for e in filenames]
-        image2_list = [osp.join(root, e.replace('_left', '_right')) for e in filenames]
-        disp_list = [osp.join(root, e.replace('image_left', 'depth_left').replace('left.png', 'left_depth.npy')) for e in filenames]
-
+        root = pathlib.Path(root)
+        image1_list = sorted(root.glob('**/image_left/*.png'))
+        image1_list = [p.as_posix() for p in image1_list]
+        image1_list = [p for p in image1_list if 'seasonsforest_winter/Easy' not in p]
+        image2_list = [p.replace('image_left', 'image_right').replace('_left', '_right') for p in image1_list]
+        disp_list = [p.replace('image_left', 'depth_left').replace('_left.png', '_left_depth.npy') for p in image1_list]
         for img1, img2, disp in zip(image1_list, image2_list, disp_list):
             self.image_list += [ [img1, img2] ]
             self.disparity_list += [ disp ]
@@ -255,14 +273,16 @@ class TartanAir(StereoDataset):
 class KITTI(StereoDataset):
     def __init__(self, aug_params=None, root='/data2/cjd/StereoDatasets/kitti/2015', image_set='training'):
         super(KITTI, self).__init__(aug_params, sparse=True, reader=frame_utils.readDispKITTI)
-        assert os.path.exists(root)
+        # assert os.path.exists(root)
 
-        root_12 = '/data2/cjd/StereoDatasets/kitti/2012/'
+        # root_12 = '/data2/cjd/StereoDatasets/kitti/2012/'
+        root_12 = '/home/duy/datasets/kitti12'
         image1_list = sorted(glob(os.path.join(root_12, image_set, 'colored_0/*_10.png')))
         image2_list = sorted(glob(os.path.join(root_12, image_set, 'colored_1/*_10.png')))
         disp_list = sorted(glob(os.path.join(root_12, 'training', 'disp_occ/*_10.png'))) if image_set == 'training' else [osp.join(root, 'training/disp_occ/000085_10.png')]*len(image1_list)
 
-        root_15 = '/data2/cjd/StereoDatasets/kitti/2015/'
+        # root_15 = '/data2/cjd/StereoDatasets/kitti/2015/'
+        root_15 = '/home/duy/datasets/Kitti2015'
         image1_list += sorted(glob(os.path.join(root_15, image_set, 'image_2/*_10.png')))
         image2_list += sorted(glob(os.path.join(root_15, image_set, 'image_3/*_10.png')))
         disp_list += sorted(glob(os.path.join(root_15, 'training', 'disp_occ_0/*_10.png'))) if image_set == 'training' else [osp.join(root, 'training/disp_occ_0/000085_10.png')]*len(image1_list)
@@ -287,13 +307,16 @@ class VKITTI2(StereoDataset):
             self.disparity_list += [ disp ]
 
 class Middlebury(StereoDataset):
-    def __init__(self, aug_params=None, root='/data2/cjd/StereoDatasets/middlebury', split='2014', resolution='F'):
+    def __init__(self, aug_params=None, root='/home/duy/datasets/Middlebury', split='2014', resolution='F'):
         super(Middlebury, self).__init__(aug_params, sparse=True, reader=frame_utils.readDispMiddlebury)
         assert os.path.exists(root)
         assert split in ["2005", "2006", "2014", "2021", "MiddEval3"]
         if split == "2005":
             scenes = list((Path(root) / "2005").glob("*"))
             for scene in scenes:
+                disp_path = scene / "disp1.png"
+                if not disp_path.exists():
+                    continue
                 self.image_list += [[str(scene / "view1.png"), str(scene / "view5.png")]]
                 self.disparity_list += [str(scene / "disp1.png")]    
                 for illum in ["1", "2", "3"]:
@@ -303,6 +326,9 @@ class Middlebury(StereoDataset):
         elif split == "2006":
             scenes = list((Path(root) / "2006").glob("*"))
             for scene in scenes:
+                disp_path = scene / "disp1.png"
+                if not disp_path.exists():
+                    continue
                 self.image_list += [[str(scene / "view1.png"), str(scene / "view5.png")]]
                 self.disparity_list += [str(scene / "disp1.png")]    
                 for illum in ["1", "2", "3"]:
@@ -334,7 +360,7 @@ class Middlebury(StereoDataset):
                 self.disparity_list += [ disp ]
 
 class CREStereoDataset(StereoDataset):
-    def __init__(self, aug_params=None, root='/data2/cjd/StereoDatasets/crestereo'):
+    def __init__(self, aug_params=None, root='/home/duy/datasets/CREStereo'):
         super(CREStereoDataset, self).__init__(aug_params, reader=frame_utils.readDispCREStereo)
         assert os.path.exists(root)
 
@@ -349,13 +375,17 @@ class CREStereoDataset(StereoDataset):
             self.disparity_list += [ disp ]
 
 class InStereo2K(StereoDataset):
-    def __init__(self, aug_params=None, root='/data2/cjd/data_wxq/instereo2k'):
+    def __init__(self, aug_params=None, root='/home/duy/datasets/InStereo2k'):
         super(InStereo2K, self).__init__(aug_params, sparse=True, reader=frame_utils.readDispInStereo2K)
         assert os.path.exists(root)
 
-        image1_list = sorted(glob(root + '/train/*/*/left.png') + glob(root + '/test/*/left.png'))
-        image2_list = sorted(glob(root + '/train/*/*/right.png') + glob(root + '/test/*/right.png'))
-        disp_list = sorted(glob(root + '/train/*/*/left_disp.png') + glob(root + '/test/*/left_disp.png'))
+        # image1_list = sorted(glob(root + '/train/*/*/left.png') + glob(root + '/test/*/left.png'))
+        # image2_list = sorted(glob(root + '/train/*/*/right.png') + glob(root + '/test/*/right.png'))
+        # disp_list = sorted(glob(root + '/train/*/*/left_disp.png') + glob(root + '/test/*/left_disp.png'))
+
+        image1_list = sorted(glob(root + '/*/*/left.png'))
+        image2_list = sorted(glob(root + '/*/*/right.png'))
+        disp_list = sorted(glob(root + '/*/*/left_disp.png'))
 
         assert len(image1_list) == len(image2_list) == len(disp_list)
 
@@ -390,6 +420,247 @@ class DrivingStereo(StereoDataset):
         for idx, (img1, img2, disp) in enumerate(zip(image1_list, image2_list, disp_list)):
             self.image_list += [ [img1, img2] ]
             self.disparity_list += [ disp ]
+
+
+def read_eureka_disparity(disp_path: str, transparent_only=False, dilation_kernel=10) -> np.ndarray:
+    disp_path = pathlib.Path(disp_path)
+    disp_raw = cv2.imread(disp_path.as_posix(), cv2.IMREAD_UNCHANGED)
+    props_path = disp_path.parent / "properties.json"
+    if props_path.exists():
+        props = json.load(props_path.open("r"))
+        disp_min = props["disparity"]["min"]
+        disp_max = props["disparity"]["max"]
+    else:
+        props_path = disp_path.parent / "config.yaml"
+        props = yaml.safe_load(props_path.open("r"))
+        disp_min = props["scene_info"]["disparity_info"]["min_disp"]
+        disp_max = props["scene_info"]["disparity_info"]["max_disp"]
+
+    # normalize 0-65535 to disp_min-disp_max
+    disp = disp_raw.astype(np.float32) / 65535.0 * (disp_max - disp_min) + disp_min
+    if not transparent_only:
+        return disp
+
+    mask_path = disp_path.parent / "mask.png"
+    mask = cv2.imread(mask_path.as_posix(), cv2.IMREAD_GRAYSCALE)
+    if dilation_kernel:
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (dilation_kernel, dilation_kernel))
+        mask = cv2.dilate(mask, kernel, iterations=1)
+    object_mask = mask > 0
+    valid = disp > 0
+    valid = np.logical_and(valid, object_mask)
+    return disp, valid
+
+
+class EurekaSyntheticDataset(StereoDataset):
+    def __init__(
+        self,
+        aug_params=None,
+        root="/home/duy/datasets/simulated_data",
+        subsets=(
+            "opaque/general",
+            "opaque/single_object",
+            "transparent/general",
+            "transparent/single_object",
+        ),
+        validatation=False,
+        val_split=0.1,
+        transparent_only=False,
+    ):
+        if transparent_only:
+            reader_fn = functools.partial(read_eureka_disparity, transparent_only=True, dilation_kernel=10)
+            sparse = True
+        else:
+            reader_fn = read_eureka_disparity
+            sparse = False
+
+        if aug_params is not None:
+            aug_params = aug_params.copy()
+            aug_params["min_scale"] = -1.6
+            aug_params["max_scale"] = -1.6
+        super().__init__(aug_params, sparse=sparse, reader=reader_fn)
+        self.root = root
+
+        for subset in subsets:
+            self._add_subset(subset, validatation, val_split)
+
+    def _add_subset(self, subset_name: str, validatation: bool = False, val_split=0.3):
+        subset_path = pathlib.Path(self.root) / subset_name
+        if not subset_path.exists():
+            raise FileNotFoundError(f"Dataset {subset_name} not found in {self.root}")
+
+        scene_paths = sorted(subset_path.glob("*/"))
+        left_images = [p / "image_0.png" for p in scene_paths]
+        right_images = [p / "image_1.png" for p in scene_paths]
+        disp_maps = [p / "disp.png" for p in scene_paths]
+
+        num_scenes = len(scene_paths)
+        split_index = int(num_scenes * (1 - val_split))
+        num_added = 0
+        for i, (left, right, disp) in enumerate(
+            zip(left_images, right_images, disp_maps)
+        ):
+            if validatation and i < split_index:
+                continue
+            if not validatation and i >= split_index:
+                continue
+
+            self.image_list += [[left.as_posix(), right.as_posix()]]
+            self.disparity_list += [disp.as_posix()]
+            num_added += 1
+        logging.info("Added %d images from %s", num_added, subset_name)
+
+
+def read_booster(disp_path: str, transparent_only=False) -> tuple:
+    disp = np.load(disp_path)
+    disp = disp.astype(np.float32)
+    valid = disp > 0
+    
+    if transparent_only:
+        mask_path = disp_path.replace("disp_00.npy", "mask_cat.png")
+        mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
+        object_mask = mask != 0
+        valid = np.logical_and(valid, object_mask)
+
+    occ_mask = disp_path.replace("disp_00.npy", "mask_00.png")
+    if os.path.exists(occ_mask):
+        nonocc = cv2.imread(occ_mask, cv2.IMREAD_GRAYSCALE)
+        nonocc = nonocc > 0
+        valid = np.logical_and(valid, nonocc)
+
+    return disp, valid
+
+
+class BoosterDataset(StereoDataset):
+    def __init__(self, aug_params=None, root='/home/duy/datasets/booster/train', transparent_only=False):
+        if transparent_only:
+            reader_fn = functools.partial(read_booster, transparent_only=True)
+        else:
+            reader_fn = read_booster
+        if aug_params is not None:
+            aug_params = aug_params.copy()
+            aug_params["min_scale"] = -2.7
+            aug_params["max_scale"] = -2.19
+        super(BoosterDataset, self).__init__(aug_params, sparse=True, reader=reader_fn)
+        assert os.path.exists(root)
+
+        root_path = pathlib.Path(root)
+        image1_list = sorted(root_path.glob("balanced/*/camera_00/*.png"))
+        disp_list = [p.parent.parent / "disp_00.npy" for p in image1_list]
+
+        image1_list = [str(p) for p in image1_list]
+        image2_list = [p.replace("camera_00", "camera_02") for p in image1_list]
+        disp_list = [str(p) for p in disp_list]
+        assert len(image1_list) == len(image2_list) == len(disp_list)
+        for img1, img2, disp in zip(image1_list, image2_list, disp_list):
+            self.image_list += [[img1, img2]]
+            self.disparity_list += [disp]
+
+        # image1_list = sorted(root_path.glob("unbalanced/*/camera_00/*.png"))
+        # disp_list = [p.parent.parent / "disp_00.npy" for p in image1_list]
+        #
+        # image1_list = [str(p) for p in image1_list]
+        # image2_list = [p.replace("camera_00", "camera_01") for p in image1_list]
+        # disp_list = [str(p) for p in disp_list]
+        # assert len(image1_list) == len(image2_list) == len(disp_list)
+        # for img1, img2, disp in zip(image1_list, image2_list, disp_list):
+        #     self.image_list += [[img1, img2]]
+        #     self.disparity_list += [disp]
+
+
+def read_cleardepth(disp_path: str, transparent_only=False, dilation_kernel=10) -> tuple:
+    disp = np.load(disp_path)
+    disp = disp.astype(np.float32)
+    valid = disp > 0
+
+    if transparent_only:
+        mask_path = disp_path.replace("disparity", "segmentation")
+        mask_path = mask_path.replace(".npy", "_L.png")
+        mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
+        if dilation_kernel:
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (dilation_kernel, dilation_kernel))
+            mask = cv2.dilate(mask, kernel, iterations=1)
+        mask = mask > 0
+        valid = np.logical_and(valid, mask)
+
+    return disp, valid
+
+
+class ClearDepthDataset(StereoDataset):
+
+    def __init__(self, aug_params=None, root='/home/duy/datasets/cleardepth', transparent_only=False):
+        if transparent_only:
+            reader_fn = functools.partial(read_cleardepth, transparent_only=True)
+        else:
+            reader_fn = read_cleardepth
+        if aug_params is not None:
+            aug_params = aug_params.copy()
+            aug_params["min_scale"] = -1
+            aug_params["max_scale"] = -0.7
+        super(ClearDepthDataset, self).__init__(aug_params, sparse=True, reader=reader_fn)
+        assert os.path.exists(root)
+
+        root = pathlib.Path(root)
+        image1_list = sorted(root.glob("transparent_dataset/*/Image*_L.png"))
+
+        image1_list = [str(p) for p in image1_list]
+        image2_list = [p.replace("_L.png", "_R.png") for p in image1_list]
+        disp_list = []
+        for p in image1_list:
+            parent, name = os.path.split(p)
+            num = name.split("_")[0]
+            num = num.replace("Image", "")
+            disp_name = f"disparity{num}.npy"
+            disp_path = os.path.join(parent, disp_name)
+            assert os.path.exists(disp_path), f"Disparity file {disp_path} does not exist"
+            disp_list.append(disp_path)
+
+        for img1, img2, disp in zip(image1_list, image2_list, disp_list):
+            self.image_list += [[img1, img2]]
+            self.disparity_list += [disp]
+
+
+def read_eurekav1(disp_path: str, transparent_only=False, dilation_kernel=10) -> tuple:
+    disp = np.load(disp_path)
+    disp = disp.astype(np.float32)
+    valid = disp > 0
+
+    if transparent_only:
+        mask_path = disp_path.replace("disp.npy", "mask.png")
+        mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
+        if dilation_kernel:
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (dilation_kernel, dilation_kernel))
+            mask = cv2.dilate(mask, kernel, iterations=1)
+
+        object_mask = mask > 0
+        valid = np.logical_and(valid, object_mask)
+
+    return disp, valid
+
+
+class EurekaV1Dataset(StereoDataset):
+
+    def __init__(self, aug_params=None, root='/home/duy/datasets/eureka-transparent/eureka', transparent_only=False):
+        if transparent_only:
+            reader_fn = functools.partial(read_eurekav1, transparent_only=True, dilation_kernel=10)
+        else:
+            reader_fn = read_eurekav1
+        if aug_params is not None:
+            aug_params = aug_params.copy()
+            aug_params["min_scale"] = -1.6
+            aug_params["max_scale"] = -1.3
+        super(EurekaV1Dataset, self).__init__(aug_params, sparse=True, reader=reader_fn)
+        assert os.path.exists(root)
+
+        root = pathlib.Path(root)
+        image1_list = sorted(root.glob("*/image_0.png"))
+        image1_list = [str(p) for p in image1_list]
+        image2_list = [p.replace("image_0", "image_1") for p in image1_list]
+        disp_list = [p.replace("image_0.png", "disp.npy") for p in image1_list]
+
+        for img1, img2, disp in zip(image1_list, image2_list, disp_list):
+            self.image_list += [[img1, img2]]
+            self.disparity_list += [disp]
 
   
 def fetch_dataloader(args):
@@ -461,8 +732,8 @@ def fetch_dataloader(args):
             logging.info(f"Adding {len(crestereo)} samples from CREStereo Dataset")                 
             instereo2k = InStereo2K(aug_params)
             logging.info(f"Adding {len(instereo2k)} samples from InStereo2K")
-            carla = CARLA(aug_params)
-            logging.info(f"Adding {len(carla)} samples from CARLA")
+            # carla = CARLA(aug_params)
+            # logging.info(f"Adding {len(carla)} samples from CARLA")
             mb2005 = Middlebury(aug_params, split='2005')
             logging.info(f"Adding {len(mb2005)} samples from Middlebury 2005")
             mb2006 = Middlebury(aug_params, split='2006')
@@ -471,13 +742,114 @@ def fetch_dataloader(args):
             logging.info(f"Adding {len(mb2014)} samples from Middlebury 2014")
             mb2021 = Middlebury(aug_params, split='2021')
             logging.info(f"Adding {len(mb2021)} samples from Middlebury 2021")
-            mbeval3 = Middlebury(aug_params, split='MiddEval3', resolution='H')
-            logging.info(f"Adding {len(mbeval3)} samples from Middlebury Eval3")
-            mbeval3_f = Middlebury(aug_params, split='MiddEval3', resolution='F')
-            logging.info(f"Adding {len(mbeval3)} samples from Middlebury Eval3")
+            # mbeval3 = Middlebury(aug_params, split='MiddEval3', resolution='H')
+            # logging.info(f"Adding {len(mbeval3)} samples from Middlebury Eval3")
+            # mbeval3_f = Middlebury(aug_params, split='MiddEval3', resolution='F')
+            # logging.info(f"Adding {len(mbeval3_f)} samples from Middlebury Eval3")
             fallingthings = FallingThings(aug_params)
             logging.info(f"Adding {len(fallingthings)} samples from FallingThings")
-            new_dataset = crestereo + instereo2k * 50 + carla * 50 + mb2005 * 200 + mb2006 * 200 + mb2014 * 200 + mb2021 * 200 + mbeval3 * 200 + mbeval3_f * 400 + fallingthings * 5
+            # new_dataset = crestereo + instereo2k * 50 + carla * 50 + mb2005 * 200 + mb2006 * 200 + mb2014 * 200 + mb2021 * 200 + mbeval3 * 200 + mbeval3_f * 400 + fallingthings * 5
+            new_dataset = crestereo + instereo2k * 50 + mb2005 * 200 + mb2006 * 200 + mb2014 * 200 + mb2021 * 200 + fallingthings * 5
+            logging.info(f"Adding {len(new_dataset)} samples from Middlebury Mixture Dataset")
+        elif dataset_name == 'smc':
+            mb2005 = Middlebury(aug_params, split='2005')
+            logging.info(f"Adding {len(mb2005)} samples from Middlebury 2005")
+            mb2006 = Middlebury(aug_params, split='2006')
+            logging.info(f"Adding {len(mb2006)} samples from Middlebury 2006")
+            mb2014 = Middlebury(aug_params, split='2014')
+            logging.info(f"Adding {len(mb2014)} samples from Middlebury 2014")
+            mb2021 = Middlebury(aug_params, split='2021')
+            logging.info(f"Adding {len(mb2021)} samples from Middlebury 2021")
+            # mbeval3 = Middlebury(aug_params, split='MiddEval3', resolution='H')
+            # logging.info(f"Adding {len(mbeval3)} samples from Middlebury Eval3")
+            mbeval3_f = Middlebury(aug_params, split='MiddEval3', resolution='F')
+            logging.info(f"Adding {len(mbeval3_f)} samples from Middlebury Eval3")
+            eureka = EurekaSyntheticDataset(
+                aug_params, 
+                root='/home/duy/datasets',
+                subsets=["smc-stereo/scenes"], 
+                validatation=False, 
+                val_split=0.3
+            )
+            new_dataset = mb2005 * 200 + mb2006 * 200 + mb2014 * 200 + mb2021 * 200 + mbeval3_f * 400 + eureka * 20
+            # new_dataset = mb2005 + mb2006 + mb2014 + mb2021 + mbeval3_f + eureka
+        elif dataset_name == 'transparent':
+            clear_depth = ClearDepthDataset(aug_params, transparent_only=True)
+            logging.info(f"Adding {len(clear_depth)} samples from ClearDepth Dataset")
+            booster = BoosterDataset(aug_params, root='/home/duy/datasets/booster/train', transparent_only=True)
+            logging.info(f"Adding {len(booster)} samples from Booster Dataset")
+            eureka_syn = EurekaSyntheticDataset(
+                aug_params, 
+                root='/home/duy/datasets/simulated_data',
+                subsets=["transparent/general", "transparent/single_object"], 
+                validatation=False, 
+                val_split=0.0,
+                transparent_only=True
+            )
+            logging.info(f"Adding {len(eureka_syn)} samples from Eureka Synthetic Dataset")
+            eureka_sim = EurekaV1Dataset(
+                aug_params, 
+                root='/home/duy/datasets/eureka-transparent/eureka-sim',
+                transparent_only=True
+            )
+            logging.info(f"Adding {len(eureka_sim)} samples from Eureka V1 Dataset")
+            new_dataset = clear_depth * 3 * 5 + booster * 20 * 5 + eureka_syn * 5 * 5 + eureka_sim * 100 * 5
+            logging.info(f"Adding {len(new_dataset)} samples from Middlebury Mixture Dataset")
+        elif dataset_name == 'mixed':
+            tartanair = TartanAir(aug_params)
+            logging.info(f"Adding {len(tartanair)} samples from Tartain Air")
+            # sceneflow = SceneFlowDatasets(aug_params, dstype='frames_finalpass')
+            # logging.info(f"Adding {len(sceneflow)} samples from SceneFlow")
+            # fallingthings = FallingThings(aug_params)
+            # logging.info(f"Adding {len(fallingthings)} samples from FallingThings")
+            # carla = CARLA(aug_params)
+            # logging.info(f"Adding {len(carla)} samples from CARLA")
+            crestereo = CREStereoDataset(aug_params)
+            logging.info(f"Adding {len(crestereo)} samples from CREStereo Dataset")             
+            instereo2k = InStereo2K(aug_params)
+            logging.info(f"Adding {len(instereo2k)} samples from InStereo2K")
+            mb2005 = Middlebury(aug_params, split='2005')
+            logging.info(f"Adding {len(mb2005)} samples from Middlebury 2005")
+            mb2006 = Middlebury(aug_params, split='2006')
+            logging.info(f"Adding {len(mb2006)} samples from Middlebury 2006")
+            mb2014 = Middlebury(aug_params, split='2014')
+            logging.info(f"Adding {len(mb2014)} samples from Middlebury 2014")
+            mb2021 = Middlebury(aug_params, split='2021')
+            logging.info(f"Adding {len(mb2021)} samples from Middlebury 2021")
+            # mbeval3 = Middlebury(aug_params, split='MiddEval3', resolution='H')
+            # logging.info(f"Adding {len(mbeval3)} samples from Middlebury Eval3")
+            # kitti = KITTI(aug_params)
+            # logging.info(f"Adding {len(kitti)} samples from KITTI")
+            eureka_smc = EurekaSyntheticDataset(
+                aug_params, 
+                root='/home/duy/datasets',
+                subsets=["smc-stereo/scenes"], 
+                validatation=False, 
+                val_split=0.3
+            )
+            logging.info(f"Adding {len(eureka_smc)} samples from Eureka SMC Dataset")
+            clear_depth = ClearDepthDataset(aug_params, transparent_only=False)
+            logging.info(f"Adding {len(clear_depth)} samples from ClearDepth Dataset")
+            booster = BoosterDataset(aug_params, root='/home/duy/datasets/booster/train', transparent_only=False)
+            logging.info(f"Adding {len(booster)} samples from Booster Dataset")
+            eureka_syn = EurekaSyntheticDataset(
+                aug_params, 
+                root='/home/duy/datasets/simulated_data',
+                subsets=["transparent/general", "transparent/single_object", 
+                         "opaque/general", "opaque/single_object"],
+                validatation=False, 
+                val_split=0.0,
+                transparent_only=False
+            )
+            logging.info(f"Adding {len(eureka_syn)} samples from Eureka Synthetic Dataset")
+            eureka_sim = EurekaV1Dataset(
+                aug_params, 
+                root='/home/duy/datasets/eureka-transparent/eureka-sim',
+                transparent_only=False
+            )
+            logging.info(f"Adding {len(eureka_sim)} samples from Eureka V1 Dataset")
+            # new_dataset = tartanair + sceneflow + fallingthings + instereo2k * 50 + crestereo + mb2005 * 200 + mb2006 * 200 + mb2014 * 200 + mb2021 * 200 + kitti * 100 + eureka_smc * 200 + clear_depth * 5 + booster * 100 + eureka_syn * 5 + eureka_sim * 200
+            new_dataset = tartanair + instereo2k * 50 + crestereo + mb2005 * 200 + mb2006 * 200 + mb2014 * 200 + mb2021 * 200 + eureka_smc * 200 + clear_depth * 5 + booster * 100 + eureka_syn * 5 + eureka_sim * 200
             logging.info(f"Adding {len(new_dataset)} samples from Middlebury Mixture Dataset")
 
         train_dataset = new_dataset if train_dataset is None else train_dataset + new_dataset
@@ -489,6 +861,8 @@ if __name__ == '__main__':
     import matplotlib
     import matplotlib.pyplot as plt
     import cv2
+    
+    logging.basicConfig(level=logging.INFO)
 
 
     def gray_2_colormap_np(img, cmap='rainbow', max=None):
@@ -519,10 +893,68 @@ if __name__ == '__main__':
     if not os.path.exists(plot_dir):
         os.makedirs(plot_dir)
 
-    dataset = VKITTI2()
-    for i in range(5):
-        _, *data_blob = dataset[i]
+    # dataset = VKITTI2()
+    # for i in range(5):
+    #     _, *data_blob = dataset[i]
+    #     image1, image2, disp_gt, valid = [x[None] for x in data_blob]
+    #     image1_np = image1[0].squeeze().cpu().numpy()
+    #     image1_np = (image1_np - image1_np.min()) / (image1_np.max() - image1_np.min()) * 255.0
+    #     image1_np = image1_np.astype(np.uint8)
+    #
+    #     disp_color = viz_disp(disp_gt, scale=5)
+    #     cv2.imwrite(os.path.join(plot_dir, f'{i}_disp_gt.png'), disp_color)
+    #
+    #     disp_gt_np = gray_2_colormap_np(disp_gt[0].squeeze())
+    #     cv2.imwrite(os.path.join(plot_dir, f'{i}_disp_gt1.png'), disp_gt_np[:, :, ::-1])
+    #
+    #     image1 = image1[0].permute(1, 2, 0).cpu().numpy()[:, :, ::-1]
+    #     cv2.imwrite(os.path.join(plot_dir, f'{i}_img1.png'), image1)
+
+    from omegaconf import OmegaConf
+
+    # args = OmegaConf.load("config/train_smc.yaml")
+    # args = OmegaConf.load("config/train_mixed.yaml")
+    args = OmegaConf.load("config/train_sceneflow_vggt.yaml")
+    # args.image_size = [480, 640]
+    train_dataset = fetch_dataloader(args)
+
+    # aug_params = {
+    #     'crop_size': [480, 640],
+    #     'min_scale': -1.6,
+    #     'max_scale': -1.4,
+    # }
+    # aug_params = None
+
+    # train_dataset = BoosterDataset(aug_params=aug_params, root='/home/duy/datasets/booster/train', transparent_only=True)
+    # train_dataset = ClearDepthDataset(aug_params=aug_params, root='/home/duy/datasets/cleardepth', transparent_only=True)
+    # train_dataset = EurekaV1Dataset(
+    #     aug_params=aug_params, 
+    #     # root='/home/duy/datasets/eureka-transparent/eureka', 
+    #     root='/home/duy/datasets/eureka-transparent/eureka-sim',
+    #     transparent_only=True
+    # )
+    # train_dataset = EurekaSyntheticDataset(
+    #     aug_params=aug_params, 
+    #     root='/home/duy/datasets/simulated_data',
+    #     subsets=[
+    #         "transparent/general", 
+    #         "transparent/single_object",
+    #     ],
+    #     validatation=False, 
+    #     val_split=0.0,
+    #     transparent_only=True,
+    # )
+    print(f"Dataset size: {len(train_dataset)}")
+    # import tqdm
+    # for i in tqdm.tqdm(range(len(train_dataset))):
+    #     _, *data_blob = train_dataset[i]
+    #     image1, image2, disp_gt, valid = [x[None] for x in data_blob]
+
+    for i in range(0, 1000000, 100000):
+        _, *data_blob = train_dataset[i]
         image1, image2, disp_gt, valid = [x[None] for x in data_blob]
+        disp_gt = disp_gt * valid
+        print(image1.shape, image2.shape, disp_gt.shape, valid.shape)
         image1_np = image1[0].squeeze().cpu().numpy()
         image1_np = (image1_np - image1_np.min()) / (image1_np.max() - image1_np.min()) * 255.0
         image1_np = image1_np.astype(np.uint8)
@@ -535,6 +967,8 @@ if __name__ == '__main__':
 
         image1 = image1[0].permute(1, 2, 0).cpu().numpy()[:, :, ::-1]
         cv2.imwrite(os.path.join(plot_dir, f'{i}_img1.png'), image1)
+        image2 = image2[0].permute(1, 2, 0).cpu().numpy()[:, :, ::-1]
+        cv2.imwrite(os.path.join(plot_dir, f'{i}_img2.png'), image2)
 
 
 

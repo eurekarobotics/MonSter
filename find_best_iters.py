@@ -351,10 +351,8 @@ def validate_middlebury(model, iters=32, split='F', mixed_prec=False):
         padder = InputPadder(image1.shape, divis_by=32)
         image1, image2 = padder.pad(image1, image2)
 
-        start_time = time.time()
         with autocast(enabled=mixed_prec):
             flow_pr = model(image1, image2, iters=iters, test_mode=True)
-        print(f"Inference time: {time.time() - start_time:.3f} seconds")
         flow_pr = padder.unpad(flow_pr).cpu().squeeze(0)
         # a = input('input something')
         # print(a)
@@ -385,71 +383,11 @@ def validate_middlebury(model, iters=32, split='F', mixed_prec=False):
     return {f'middlebury{split}-epe': epe, f'middlebury{split}-d1': d1}
 
 
-@torch.no_grad()
-def validate_booster(model, iters=32, mixed_prec=False, image_size=(480, 640)):
-    """ Peform validation using the Middlebury-V3 dataset """
-    model.eval()
-    aug_params = {}
-    val_dataset = datasets.BoosterDataset(aug_params)
-    print(f"Booster dataset length: {len(val_dataset)}")
-
-    out_list, epe_list = [], []
-    for val_id in tqdm(range(len(val_dataset))):
-        (imageL_file, _, _), image1, image2, flow_gt, valid_gt = val_dataset[val_id]
-        height, width = image1.shape[-2:]
-        image1 = F.interpolate(image1[None], size=image_size, mode='bilinear', align_corners=False)
-        image2 = F.interpolate(image2[None], size=image_size, mode='bilinear', align_corners=False)
-        flow_gt = F.interpolate(flow_gt[None], size=image_size, mode='nearest')
-        flow_gt = flow_gt[0]
-        flow_gt = flow_gt / width * image_size[1]
-        valid_gt = F.interpolate(valid_gt[None, None], size=image_size, mode='nearest')
-        valid_gt = valid_gt[0, 0]
-
-        image1 = image1.cuda()
-        image2 = image2.cuda()
-
-        padder = InputPadder(image1.shape, divis_by=32)
-        image1, image2 = padder.pad(image1, image2)
-
-        start_time = time.time()
-        with autocast(enabled=mixed_prec):
-            flow_pr = model(image1, image2, iters=iters, test_mode=True)
-        # print(f"Inference time: {time.time() - start_time:.3f} seconds")
-        flow_pr = padder.unpad(flow_pr).cpu().squeeze(0)
-        # a = input('input something')
-        # print(a)
-
-        assert flow_pr.shape == flow_gt.shape, (flow_pr.shape, flow_gt.shape)
-        epe = torch.sum((flow_pr - flow_gt)**2, dim=0).sqrt()
-
-        epe_flattened = epe.flatten()
-
-        # occ_mask = Image.open(imageL_file.replace('im0.png', 'mask0nocc.png')).convert('L')
-        # occ_mask = np.ascontiguousarray(occ_mask, dtype=np.float32).flatten()
-
-        val = (valid_gt.reshape(-1) >= 0.5) & (flow_gt[0].reshape(-1) > 0)
-        out = (epe_flattened > 2.0)
-        image_out = out[val].float().mean().item()
-        image_epe = epe_flattened[val].mean().item()
-        # logging.info(f"Booster Iter {val_id+1} out of {len(val_dataset)}. EPE {round(image_epe,4)} D1 {round(image_out,4)}")
-        epe_list.append(image_epe)
-        out_list.append(image_out)
-
-    epe_list = np.array(epe_list)
-    out_list = np.array(out_list)
-
-    epe = np.mean(epe_list)
-    d1 = 100 * np.mean(out_list)
-
-    print(f"Validation Booster: EPE {epe}, D1 {d1}")
-    return {f'booster-epe': epe, f'booster-d1': d1}
-
-
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--restore_ckpt', help="restore checkpoint", default="/data2/cjd/mono_fusion/checkpoints/sceneflow.pth")
 
-    parser.add_argument('--dataset', help="dataset for evaluation", default='sceneflow', choices=["eth3d", "kitti", "sceneflow", "vkitti", "driving", "booster"] + [f"middlebury_{s}" for s in 'FHQ'])
+    parser.add_argument('--dataset', help="dataset for evaluation", default='sceneflow', choices=["eth3d", "kitti", "sceneflow", "vkitti", "driving"] + [f"middlebury_{s}" for s in 'FHQ'])
     parser.add_argument('--mixed_precision', default=False, action='store_true', help='use mixed precision')
     parser.add_argument('--valid_iters', type=int, default=32, help='number of flow-field updates during forward pass')
 
@@ -510,7 +448,38 @@ if __name__ == '__main__':
         validate_kitti(model, iters=args.valid_iters, mixed_prec=use_mixed_precision)
 
     elif args.dataset in [f"middlebury_{s}" for s in 'FHQ']:
-        validate_middlebury(model, iters=args.valid_iters, split=args.dataset[-1], mixed_prec=use_mixed_precision)
+        records = []
+        iterations = list(range(2, 33, 2))
+        for n_iters in iterations:
+            print(f"Validating Middlebury-{args.dataset[-1]} with {n_iters} iterations")
+            out = validate_middlebury(model, iters=n_iters, split=args.dataset[-1], mixed_prec=use_mixed_precision)
+            records.append(out)
+        # draw epe and d1 curves based on n_iters
+        import matplotlib.pyplot as plt
+
+        epe_values = [record[f'middlebury{args.dataset[-1]}-epe'] for record in records]
+        d1_values = [record[f'middlebury{args.dataset[-1]}-d1'] for record in records]
+
+        plt.figure(figsize=(10, 6))
+        plt.subplot(2, 1, 1)
+        plt.plot(iterations, epe_values, 'b-o', label='EPE')
+        plt.xlabel('Iterations')
+        plt.ylabel('EPE')
+        plt.title(f'Middlebury-{args.dataset[-1]} EPE vs Iterations')
+        plt.grid(True)
+
+        plt.subplot(2, 1, 2)
+        plt.plot(iterations, d1_values, 'r-o', label='D1')
+        plt.xlabel('Iterations')
+        plt.ylabel('D1 (%)')
+        plt.title(f'Middlebury-{args.dataset[-1]} D1 vs Iterations')
+        plt.grid(True)
+
+        plt.tight_layout()
+        plot_filename = f'middlebury_{args.dataset[-1]}_curves.png'
+        plt.savefig(plot_filename, dpi=300, bbox_inches='tight')
+        plt.close()
+        print(f"Plot saved as {plot_filename}")
 
     elif args.dataset == 'sceneflow':
         validate_sceneflow(model, iters=args.valid_iters, mixed_prec=use_mixed_precision)
@@ -520,6 +489,3 @@ if __name__ == '__main__':
 
     elif args.dataset == 'driving':
         validate_driving(model, iters=args.valid_iters, mixed_prec=use_mixed_precision)
-
-    elif args.dataset == 'booster':
-        validate_booster(model, iters=args.valid_iters, mixed_prec=use_mixed_precision, image_size=(480, 640))

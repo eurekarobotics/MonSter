@@ -218,9 +218,10 @@ class Feat_transfer(nn.Module):
 
 
 class Monster(nn.Module):
-    def __init__(self, args):
+    def __init__(self, args, export_onnx=False):
         super().__init__()
         self.args = args
+        self.export_onnx = export_onnx
         
         context_dims = args.hidden_dims
 
@@ -403,7 +404,10 @@ class Monster(nn.Module):
 
         match_left = self.desc(self.conv(features_left[0]))
         match_right = self.desc(self.conv(features_right[0]))
-        gwc_volume = build_gwc_volume(match_left, match_right, self.args.max_disp//4, 8)
+        if self.export_onnx:
+            gwc_volume = build_gwc_volume_onnx(match_left, match_right, self.args.max_disp//4, 8)
+        else:
+            gwc_volume = build_gwc_volume(match_left, match_right, self.args.max_disp//4, 8)
         gwc_volume = self.corr_stem(gwc_volume)
         gwc_volume = self.corr_feature_att(gwc_volume, features_left[0])
         geo_encoding_volume = self.cost_agg(gwc_volume, features_left)

@@ -1,9 +1,10 @@
 import os
+
+from torch.utils.data import dataset
 import hydra
 import torch
 from tqdm import tqdm
 import torch.optim as optim
-# from util import InputPadder
 from core.utils.utils import InputPadder
 from core.monster import Monster 
 from omegaconf import OmegaConf
@@ -21,6 +22,20 @@ import matplotlib.pyplot as plt
 import numpy as np
 import wandb
 from pathlib import Path
+
+def check_nan(layer, input, output):
+    if isinstance(output, tuple):  # 检查是否为元组
+        output = output[1][-1]
+    if torch.isnan(output).any():
+        print(f"NaN detected in {layer.__class__.__name__}")
+
+def check_nan_grad(layer, grad_input, grad_output):
+    if isinstance(grad_input, tuple):  # 检查是否为元组
+        grad_input = grad_input[0]
+    if torch.isnan(grad_input).any():
+        print(f"NaN detected in gradient of {layer.__class__.__name__}")
+
+
 
 def gray_2_colormap_np(img, cmap = 'rainbow', max = None):
     img = img.cpu().detach().numpy().squeeze()
@@ -91,7 +106,7 @@ def fetch_optimizer(args, model):
 
     return optimizer, scheduler
 
-@hydra.main(version_base=None, config_path='config', config_name='train_sceneflow')
+@hydra.main(version_base=None, config_path='config', config_name='train_transparent')
 def main(cfg):
     set_seed(cfg.seed)
     logger = get_logger(__name__)
@@ -107,11 +122,21 @@ def main(cfg):
         pin_memory=True, shuffle=True, num_workers=int(4), drop_last=True)
 
     aug_params = {}
-    val_dataset = datasets.SceneFlowDatasets(dstype='frames_finalpass', things_test=True)
-    val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=8, pin_memory=True, shuffle=False, num_workers=8, drop_last=False)
+    # val_dataset = datasets.Middlebury(aug_params, split='MiddEval3', resolution='H')
+    # val_dataset = datasets.BoosterDataset()
+    booster_size = (480, 640)
 
+    val_dataset = datasets.EurekaV1Dataset(
+        aug_params=aug_params, 
+        root='/home/duy/datasets/eureka-transparent/eureka', 
+        # root='/home/duy/datasets/eureka-transparent/eureka-sim',
+        transparent_only=True
+    )
+
+    val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=int(1),
+        pin_memory=True, shuffle=False, num_workers=int(4), drop_last=False)
     model = Monster(cfg)
-    if not cfg.restore_ckpt.endswith("None"):
+    if cfg.restore_ckpt is not None:
         assert cfg.restore_ckpt.endswith(".pth")
         print(f"Loading checkpoint from {cfg.restore_ckpt}")
         assert os.path.exists(cfg.restore_ckpt)
@@ -121,10 +146,9 @@ def main(cfg):
             checkpoint = checkpoint['state_dict']
         for key in checkpoint:
             ckpt[key.replace('module.', '')] = checkpoint[key]
-
         model.load_state_dict(ckpt, strict=True)
         print(f"Loaded checkpoint from {cfg.restore_ckpt} successfully")
-        del ckpt, checkpoint
+    del ckpt, checkpoint
     optimizer, lr_scheduler = fetch_optimizer(cfg, model)
     train_loader, model, optimizer, lr_scheduler, val_loader = accelerator.prepare(train_loader, model, optimizer, lr_scheduler, val_loader)
     model.to(accelerator.device)
@@ -133,7 +157,6 @@ def main(cfg):
     should_keep_training = True
     while should_keep_training:
         active_train_loader = train_loader
-
         model.train()
         # model.module.freeze_bn()
         model.freeze_bn()
@@ -174,24 +197,29 @@ def main(cfg):
                 # accelerator.log({"disp_pred": wandb.Image(disp_preds_np, caption="step:{}".format(total_step))}, total_step)
                 # accelerator.log({"disp_gt": wandb.Image(disp_gt_np, caption="step:{}".format(total_step))}, total_step)
                 # accelerator.log({"depth_mono": wandb.Image(depth_mono_np, caption="step:{}".format(total_step))}, total_step)
-
-                accelerator.log({"disp_pred": disp_preds_np}, total_step)
-                accelerator.log({"disp_gt": disp_gt_np}, total_step)
-                accelerator.log({"depth_mono": depth_mono_np}, total_step)
-
             if (total_step > 0) and (total_step % cfg.save_frequency == 0):
                 if accelerator.is_main_process:
                     save_path = Path(cfg.save_path + '/%d.pth' % (total_step))
                     model_save = accelerator.unwrap_model(model)
                     torch.save(model_save.state_dict(), save_path)
                     del model_save
-        
-            if (total_step > 0) and (total_step % cfg.val_frequency == 0):
 
+
+            if ((total_step > 0) and (total_step % cfg.val_frequency == 0)) or (total_step == 1):
+                torch.cuda.empty_cache()
                 model.eval()
                 elem_num, total_epe, total_out = 0, 0, 0
                 for data in tqdm(val_loader, dynamic_ncols=True, disable=not accelerator.is_main_process):
                     _, left, right, disp_gt, valid = [x for x in data]
+                    width = left.shape[3]
+                    left = F.interpolate(left, size=booster_size, mode='bilinear', align_corners=False)
+                    right = F.interpolate(right, size=booster_size, mode='bilinear', align_corners=False)
+                    disp_gt = F.interpolate(disp_gt, size=booster_size, mode='nearest')
+                    disp_gt = disp_gt / width * booster_size[1]
+                    valid = F.interpolate(valid[None], size=booster_size, mode='nearest')
+                    valid = (disp_gt > 0) & (valid > 0.5)
+                    valid = valid[0]
+
                     padder = InputPadder(left.shape, divis_by=32)
                     left, right = padder.pad(left, right)
                     with torch.no_grad():
@@ -199,11 +227,10 @@ def main(cfg):
                     disp_pred = padder.unpad(disp_pred)
                     assert disp_pred.shape == disp_gt.shape, (disp_pred.shape, disp_gt.shape)
                     epe = torch.abs(disp_pred - disp_gt)
-                    out = (epe > 1.0).float()
+                    out = (epe > 2.0).float()
                     epe = torch.squeeze(epe, dim=1)
                     out = torch.squeeze(out, dim=1)
-                    disp_gt = torch.squeeze(disp_gt, dim=1)
-                    epe, out = accelerator.gather_for_metrics((epe[(valid >= 0.5) & (disp_gt.abs() < 192)].mean(), out[(valid >= 0.5) & (disp_gt.abs() < 192)].mean()))
+                    epe, out = accelerator.gather_for_metrics((epe[valid >= 0.5].mean(), out[valid >= 0.5].mean()))
                     # elem_num += epe.shape[0]
                     # for i in range(epe.shape[0]):
                     #     total_epe += epe[i]
@@ -211,11 +238,15 @@ def main(cfg):
                     elem_num += 1
                     total_epe += epe
                     total_out += out
-                    accelerator.log({'val/epe': total_epe / elem_num, 'val/d1': 100 * total_out / elem_num}, total_step)
+                accelerator.log({'val/epe': total_epe / elem_num, 'val/d1': 100 * total_out / elem_num}, total_step)
 
                 model.train()
                 # model.module.freeze_bn()
                 model.freeze_bn()
+                torch.cuda.empty_cache()
+            
+            if total_step % int(100) == 0:
+                torch.cuda.empty_cache()  
 
             if total_step == cfg.total_step:
                 should_keep_training = False

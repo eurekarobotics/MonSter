@@ -25,6 +25,10 @@ except ImportError:
     logger.warning("xFormers not available")
     XFORMERS_AVAILABLE = False
 
+import os
+if "XFORMERS_AVAILABLE" in os.environ:
+    XFORMERS_AVAILABLE = os.environ["XFORMERS_AVAILABLE"].lower() == "true"
+
 
 class Attention(nn.Module):
     def __init__(
