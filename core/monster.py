@@ -228,13 +228,19 @@ class Monster(nn.Module):
             'vits': [2, 5, 8, 11],
             'vitb': [2, 5, 8, 11], 
             'vitl': [4, 11, 17, 23], 
-            'vitg': [9, 19, 29, 39]
+            'vitg': [9, 19, 29, 39],
+            'dinov3_vits14': [2, 5, 8, 11],
+            'dinov3_vitb14': [2, 5, 8, 11],
+            'dinov3_vitl14': [4, 11, 17, 23],
         }
         mono_model_configs = {
             'vits': {'encoder': 'vits', 'features': 64, 'out_channels': [48, 96, 192, 384]},
             'vitb': {'encoder': 'vitb', 'features': 128, 'out_channels': [96, 192, 384, 768]},
             'vitl': {'encoder': 'vitl', 'features': 256, 'out_channels': [256, 512, 1024, 1024]},
-            'vitg': {'encoder': 'vitg', 'features': 384, 'out_channels': [1536, 1536, 1536, 1536]}
+            'vitg': {'encoder': 'vitg', 'features': 384, 'out_channels': [1536, 1536, 1536, 1536]},
+            'dinov3_vits14': {'encoder': 'dinov3_vits14', 'features': 64, 'out_channels': [48, 96, 192, 384]},
+            'dinov3_vitb14': {'encoder': 'dinov3_vitb14', 'features': 128, 'out_channels': [96, 192, 384, 768]},
+            'dinov3_vitl14': {'encoder': 'dinov3_vitl14', 'features': 256, 'out_channels': [256, 512, 1024, 1024]},
         }
         dim_list_ = mono_model_configs[self.args.encoder]['features']
         dim_list = []
@@ -291,17 +297,30 @@ class Monster(nn.Module):
 
         depth_anything = DepthAnythingV2(**mono_model_configs[args.encoder])
         depth_anything_decoder = DepthAnythingV2_decoder(**mono_model_configs[args.encoder])
-        state_dict_dpt = torch.load(f'./pretrained/depth_anything_v2_{args.encoder}.pth', map_location='cpu')
-        # state_dict_dpt = torch.load(f'/home/cjd/cvpr2025/fusion/Depth-Anything-V2-list3/depth_anything_v2_{args.encoder}.pth', map_location='cpu')
-        depth_anything.load_state_dict(state_dict_dpt, strict=True)
-        depth_anything_decoder.load_state_dict(state_dict_dpt, strict=False)
+        
+        if 'dinov3' not in args.encoder:
+            state_dict_dpt = torch.load(f'./pretrained/depth_anything_v2_{args.encoder}.pth', map_location='cpu')
+            # state_dict_dpt = torch.load(f'/home/cjd/cvpr2025/fusion/Depth-Anything-V2-list3/depth_anything_v2_{args.encoder}.pth', map_location='cpu')
+            depth_anything.load_state_dict(state_dict_dpt, strict=True)
+            depth_anything_decoder.load_state_dict(state_dict_dpt, strict=False)
+        else:
+            print(f"Skipping loading DepthAnythingV2 checkpoint for {args.encoder} (using DINOv3 backbone)")
+            # DINOv3 backbone is already loaded by DepthAnythingV2 init via dinov3_wrapper
+            pass
+            
         self.mono_encoder = depth_anything.pretrained
         self.mono_decoder = depth_anything.depth_head
         self.feat_decoder = depth_anything_decoder.depth_head
         self.mono_encoder.requires_grad_(False)
-        self.mono_decoder.requires_grad_(False)
+        if 'dinov3' in args.encoder:
+            self.mono_decoder.requires_grad_(True)
+            self.feat_decoder.requires_grad_(True)
+        else:
+            self.mono_decoder.requires_grad_(False)
 
-        del depth_anything, state_dict_dpt, depth_anything_decoder
+        del depth_anything, depth_anything_decoder
+        if 'dinov3' not in args.encoder:
+            del state_dict_dpt
         self.REMP = REMP()
 
 
@@ -316,10 +335,18 @@ class Monster(nn.Module):
 
     def infer_mono(self, image1, image2):
         height_ori, width_ori = image1.shape[2:]
-        resize_image1 = F.interpolate(image1, scale_factor=14 / 16, mode='bilinear', align_corners=True)
-        resize_image2 = F.interpolate(image2, scale_factor=14 / 16, mode='bilinear', align_corners=True)
+        if 'dinov3' in self.args.encoder:
+             resize_image1 = image1
+             resize_image2 = image2
+        else:
+             resize_image1 = F.interpolate(image1, scale_factor=14 / 16, mode='bilinear', align_corners=True)
+             resize_image2 = F.interpolate(image2, scale_factor=14 / 16, mode='bilinear', align_corners=True)
 
-        patch_h, patch_w = resize_image1.shape[-2] // 14, resize_image1.shape[-1] // 14
+        if 'dinov3' in self.args.encoder:
+            patch_size = 16
+        else:
+            patch_size = 14
+        patch_h, patch_w = resize_image1.shape[-2] // patch_size, resize_image1.shape[-1] // patch_size
         features_left_encoder = self.mono_encoder.get_intermediate_layers(resize_image1, self.intermediate_layer_idx[self.args.encoder], return_class_token=True)
         features_right_encoder = self.mono_encoder.get_intermediate_layers(resize_image2, self.intermediate_layer_idx[self.args.encoder], return_class_token=True)
         depth_mono = self.mono_decoder(features_left_encoder, patch_h, patch_w)

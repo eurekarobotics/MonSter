@@ -5,6 +5,7 @@ import torch.nn.functional as F
 from torchvision.transforms import Compose
 
 from .dinov2 import DINOv2
+from .dinov3 import DINOv3
 from .util.blocks import FeatureFusionBlock, _make_scratch
 from .util.transform import Resize, NormalizeImage, PrepareForNet
 
@@ -321,11 +322,17 @@ class DepthAnythingV2(nn.Module):
             'vits': [2, 5, 8, 11],
             'vitb': [2, 5, 8, 11], 
             'vitl': [4, 11, 17, 23], 
-            'vitg': [9, 19, 29, 39]
+            'vitg': [9, 19, 29, 39],
+            'dinov3_vits14': [2, 5, 8, 11],
+            'dinov3_vitb14': [2, 5, 8, 11],
+            'dinov3_vitl14': [4, 11, 17, 23],
         }
         
         self.encoder = encoder
-        self.pretrained = DINOv2(model_name=encoder)
+        if 'dinov3' in encoder:
+            self.pretrained = DINOv3(model_name=encoder)
+        else:
+            self.pretrained = DINOv2(model_name=encoder)
 
         # print('self.pretrained.embed_dim', self.pretrained.embed_dim)
         print('DepthAnythingV2 out_channels', out_channels)
@@ -333,7 +340,11 @@ class DepthAnythingV2(nn.Module):
         self.depth_head = DPTHead(self.pretrained.embed_dim, features, use_bn, out_channels=out_channels, use_clstoken=use_clstoken)
     
     def forward(self, x):
-        patch_h, patch_w = x.shape[-2] // 14, x.shape[-1] // 14
+        if 'dinov3' in self.encoder:
+            patch_size = 16
+        else:
+            patch_size = 14
+        patch_h, patch_w = x.shape[-2] // patch_size, x.shape[-1] // patch_size
         
         features = self.pretrained.get_intermediate_layers(x, self.intermediate_layer_idx[self.encoder], return_class_token=True)
         
@@ -343,7 +354,11 @@ class DepthAnythingV2(nn.Module):
         return depth.squeeze(1)
 
     def forward_features(self, x, only_feat=False):
-        patch_h, patch_w = x.shape[-2] // 14, x.shape[-1] // 14
+        if 'dinov3' in self.encoder:
+            patch_size = 16
+        else:
+            patch_size = 14
+        patch_h, patch_w = x.shape[-2] // patch_size, x.shape[-1] // patch_size
         
         features = self.pretrained.get_intermediate_layers(x, self.intermediate_layer_idx[self.encoder], return_class_token=True)
         if only_feat:
@@ -408,7 +423,10 @@ class DepthAnythingV2_decoder(nn.Module):
             'vits': [2, 5, 8, 11],
             'vitb': [2, 5, 8, 11], 
             'vitl': [4, 11, 17, 23], 
-            'vitg': [9, 19, 29, 39]
+            'vitg': [9, 19, 29, 39],
+            'dinov3_vits14': [2, 5, 8, 11],
+            'dinov3_vitb14': [2, 5, 8, 11],
+            'dinov3_vitl14': [4, 11, 17, 23],
         }
         print('DepthAnythingV2_decoder out_channels', out_channels)
         
@@ -418,7 +436,11 @@ class DepthAnythingV2_decoder(nn.Module):
         self.depth_head = DPTHead_decoder(out_channels[-1], features, use_bn, out_channels=out_channels, use_clstoken=use_clstoken)
     
     def forward(self, x):
-        patch_h, patch_w = x.shape[-2] // 14, x.shape[-1] // 14
+        if 'dinov3' in self.encoder:
+            patch_size = 16
+        else:
+            patch_size = 14
+        patch_h, patch_w = x.shape[-2] // patch_size, x.shape[-1] // patch_size
         
         features = self.pretrained.get_intermediate_layers(x, self.intermediate_layer_idx[self.encoder], return_class_token=True)
         
