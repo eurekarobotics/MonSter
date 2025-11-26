@@ -18,9 +18,15 @@ except:
             pass
         def __exit__(self, *args):
             pass
+import os
 import sys
 sys.path.append('./Depth-Anything-V2-list3')
 from depth_anything_v2.dpt import DepthAnythingV2, DepthAnythingV2_decoder
+from depth_anything_v2.dinov2_depth_head_adapter import (
+    DINOv2FeatureAdapter,
+    DINOv2DepthAdapter,
+    load_dinov2_decoder_weights
+)
 
     
 def compute_scale_shift(monocular_depth, gt_depth, mask=None):
@@ -79,7 +85,6 @@ class hourglass(nn.Module):
                                              padding=1, stride=2, dilation=1),
                                    BasicConv(in_channels*6, in_channels*6, is_3d=True, bn=True, relu=True, kernel_size=3,
                                              padding=1, stride=1, dilation=1)) 
-
 
         self.conv3_up = BasicConv(in_channels*6, in_channels*4, deconv=True, is_3d=True, bn=True,
                                   relu=True, kernel_size=(4, 4, 4), padding=(1, 1, 1), stride=(2, 2, 2))
@@ -233,6 +238,11 @@ class Monster(nn.Module):
             'dinov3_vits14': [2, 5, 8, 11],
             'dinov3_vitb14': [2, 5, 8, 11],
             'dinov3_vitl14': [4, 11, 17, 23],
+            # DINOv2 depth head variants (DINOv2 Encoder + DINOv2 Depth Head)
+            'vits_dd': [2, 5, 8, 11],
+            'vitb_dd': [2, 5, 8, 11],
+            'vitl_dd': [4, 11, 17, 23],
+            'vitg_dd': [9, 19, 29, 39],
         }
         mono_model_configs = {
             'vits': {'encoder': 'vits', 'features': 64, 'out_channels': [48, 96, 192, 384]},
@@ -242,7 +252,18 @@ class Monster(nn.Module):
             'dinov3_vits14': {'encoder': 'dinov3_vits14', 'features': 64, 'out_channels': [48, 96, 192, 384]},
             'dinov3_vitb14': {'encoder': 'dinov3_vitb14', 'features': 128, 'out_channels': [96, 192, 384, 768]},
             'dinov3_vitl14': {'encoder': 'dinov3_vitl14', 'features': 256, 'out_channels': [256, 512, 1024, 1024]},
+            # DINOv2 depth head variants
+            'vits_dd': {'encoder': 'vits', 'features': 64, 'out_channels': [128, 256, 512, 1024]},
+            'vitb_dd': {'encoder': 'vitb', 'features': 128, 'out_channels': [128, 256, 512, 1024]},
+            'vitl_dd': {'encoder': 'vitl', 'features': 256, 'out_channels': [128, 256, 512, 1024]},
+            'vitg_dd': {'encoder': 'vitg', 'features': 384, 'out_channels': [128, 256, 512, 1024]},
         }
+        
+        # Override out_channels if provided in args (config file)
+        if hasattr(args, 'out_channels') and args.out_channels is not None:
+            if args.encoder in mono_model_configs:
+                mono_model_configs[args.encoder]['out_channels'] = args.out_channels
+            
         dim_list_ = mono_model_configs[self.args.encoder]['features']
         dim_list = []
         dim_list.append(dim_list_)
@@ -299,28 +320,96 @@ class Monster(nn.Module):
         depth_anything = DepthAnythingV2(**mono_model_configs[args.encoder])
         depth_anything_decoder = DepthAnythingV2_decoder(**mono_model_configs[args.encoder])
         
-        if 'dinov3' not in args.encoder:
+        self.mono_encoder = depth_anything.pretrained
+        
+        use_dinov2_decoder = 'dinov3' not in args.encoder and '_dd' in args.encoder
+        
+        if 'dinov3' not in args.encoder and not use_dinov2_decoder:
+            # Case 1: DINOv2 + Standard Decoder (Legacy)
             state_dict_dpt = torch.load(f'./pretrained/depth_anything_v2_{args.encoder}.pth', map_location='cpu')
-            # state_dict_dpt = torch.load(f'/home/cjd/cvpr2025/fusion/Depth-Anything-V2-list3/depth_anything_v2_{args.encoder}.pth', map_location='cpu')
+            state_dict_dpt = torch.load(f'./pretrained/depth_anything_v2_{args.encoder}.pth', map_location='cpu')
             depth_anything.load_state_dict(state_dict_dpt, strict=True)
             depth_anything_decoder.load_state_dict(state_dict_dpt, strict=False)
-        else:
-            print(f"Skipping loading DepthAnythingV2 checkpoint for {args.encoder} (using DINOv3 backbone)")
-            # DINOv3 backbone is already loaded by DepthAnythingV2 init via dinov3_wrapper
-            pass
             
-        self.mono_encoder = depth_anything.pretrained
-        self.mono_decoder = depth_anything.depth_head
-        self.feat_decoder = depth_anything_decoder.depth_head
+            self.mono_decoder = depth_anything.depth_head
+            self.feat_decoder = depth_anything_decoder.depth_head
+            
+        elif use_dinov2_decoder:
+            # Case 3: DINOv2 Encoder + DINOv2 Depth Head
+            config = mono_model_configs[args.encoder]
+            out_channels = config['out_channels']
+            
+            # Determine correct embed_dim for DINOv2 encoder
+            if 'vits' in args.encoder: embed_dim = 384
+            elif 'vitb' in args.encoder: embed_dim = 768
+            elif 'vitl' in args.encoder: embed_dim = 1024
+            elif 'vitg' in args.encoder: embed_dim = 1536
+            else: embed_dim = config['features']
+            
+            # 1. Instantiate adapters
+            self.mono_decoder = DINOv2DepthAdapter(
+                in_channels=[embed_dim] * 4, 
+                channels=256, 
+                post_process_channels=out_channels,
+                n_output_channels=1
+            )
+            self.feat_decoder = DINOv2FeatureAdapter(
+                in_channels=[embed_dim] * 4,
+                channels=256,
+                post_process_channels=mono_model_configs[args.encoder]['out_channels'],
+                use_bn=False,
+                use_clstoken=False
+            )
+            
+            # 2. Load weights
+            base_encoder = args.encoder.replace('_dd', '')
+            backbone_name = f"dinov2_{base_encoder}14"
+            
+            load_dinov2_decoder_weights(self.mono_decoder, backbone_name=backbone_name)
+            load_dinov2_decoder_weights(self.feat_decoder, backbone_name=backbone_name)
+            
+            # 3. Load Backbone weights
+            pretrained_dir = "pretrained"
+            if os.path.exists(pretrained_dir):
+                candidates = [
+                    f"{backbone_name}_reg4_pretrain.pth",
+                    f"{backbone_name}_pretrain.pth",
+                    f"{backbone_name}.pth"
+                ]
+                for fname in candidates:
+                    local_path = os.path.join(pretrained_dir, fname)
+                    if os.path.exists(local_path):
+                        try:
+                            state_dict = torch.load(local_path, map_location="cpu")
+                            if "model" in state_dict:
+                                state_dict = state_dict["model"]
+                            elif "teacher" in state_dict:
+                                state_dict = state_dict["teacher"]
+                            
+                            self.mono_encoder.load_state_dict(state_dict, strict=False)
+                            break
+                        except Exception:
+                            pass
+            
+        else:
+            # DINOv3 backbone is already loaded by DepthAnythingV2 init via dinov3_wrapper
+            self.mono_decoder = depth_anything.depth_head
+            self.feat_decoder = depth_anything_decoder.depth_head
+            
+        
         self.mono_encoder.requires_grad_(False)
         if 'dinov3' in args.encoder:
             self.mono_decoder.requires_grad_(True)
             self.feat_decoder.requires_grad_(True)
+        elif use_dinov2_decoder:
+            self.mono_decoder.requires_grad_(False)
+            self.feat_decoder.requires_grad_(True)
         else:
             self.mono_decoder.requires_grad_(False)
 
+
         del depth_anything, depth_anything_decoder
-        if 'dinov3' not in args.encoder:
+        if 'dinov3' not in args.encoder and not use_dinov2_decoder:
             del state_dict_dpt
         self.REMP = REMP()
 

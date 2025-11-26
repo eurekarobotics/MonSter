@@ -1,8 +1,8 @@
 wandb: {}
-project_name: mixed-small-muon-dinov3
+project_name: mixed-small-muon-dinov2dd
 restore_ckpt: null
-logdir: './checkpoints/mixed-small-muon-dinov3/'
-encoder: 'dinov3_vitl14'
+logdir: './checkpoints/mixed-small-muon-dinov2dd/'
+encoder: 'vitl_dd'
 batch_size: 2
 gradient_accumulation_steps: 2
 train_datasets: ['mixed']
@@ -10,7 +10,7 @@ lr: 5e-5
 wdecay: 1e-5
 total_step: 400000
 save_frequency: 1000
-save_path: './checkpoints/mixed-small-muon-dinov3/'
+save_path: './checkpoints/mixed-small-muon-dinov2dd/'
 val_frequency: 1000
 # image_size: [352, 896]
 image_size: [480, 640]
