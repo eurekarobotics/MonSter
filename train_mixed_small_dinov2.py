@@ -293,12 +293,12 @@ def main(cfg):
             #     # accelerator.log({"disp_pred": wandb.Image(disp_preds_np, caption="step:{}".format(total_step))}, total_step)
             #     # accelerator.log({"disp_gt": wandb.Image(disp_gt_np, caption="step:{}".format(total_step))}, total_step)
             #     # accelerator.log({"depth_mono": wandb.Image(depth_mono_np, caption="step:{}".format(total_step))}, total_step)
-            if (total_step > 0) and (total_step % cfg.save_frequency == 0):
-                if accelerator.is_main_process:
-                    save_path = Path(cfg.save_path + "/%d.pth" % (total_step))
-                    model_save = accelerator.unwrap_model(model)
-                    torch.save(model_save.state_dict(), save_path)
-                    del model_save
+            # if (total_step > 0) and (total_step % cfg.save_frequency == 0):
+            #     if accelerator.is_main_process:
+            #         save_path = Path(cfg.save_path + "/%d.pth" % (total_step))
+            #         model_save = accelerator.unwrap_model(model)
+            #         torch.save(model_save.state_dict(), save_path)
+            #         del model_save
 
             if ((total_step > 0) and (total_step % cfg.val_frequency == 0)) or (
                 total_step == 1
