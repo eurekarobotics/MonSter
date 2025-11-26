@@ -207,7 +207,7 @@ def main(cfg):
         assert cfg.restore_ckpt.endswith(".pth")
         print(f"Loading checkpoint from {cfg.restore_ckpt}")
         assert os.path.exists(cfg.restore_ckpt)
-        checkpoint = torch.load(cfg.restore_ckpt, map_location="cpu")
+        checkpoint = torch.load(cfg.restore_ckpt, map_location="cpu", weights_only=False)
         ckpt = dict()
         if "state_dict" in checkpoint.keys():
             checkpoint = checkpoint["state_dict"]

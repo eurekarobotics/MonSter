@@ -103,7 +103,7 @@ def load_dinov2_decoder_weights(adapter, backbone_name):
             if fname.startswith(prefix) and "dpt_head" in fname and fname.endswith(".pth"):
                 local_path = os.path.join(pretrained_dir, fname)
                 try:
-                    state_dict = torch.load(local_path, map_location="cpu")
+                    state_dict = torch.load(local_path, map_location="cpu", weights_only=False)
                     if "model" in state_dict:
                         state_dict = state_dict["model"]
                     elif "state_dict" in state_dict:

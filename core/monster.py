@@ -326,8 +326,8 @@ class Monster(nn.Module):
         
         if 'dinov3' not in args.encoder and not use_dinov2_decoder:
             # Case 1: DINOv2 + Standard Decoder (Legacy)
-            state_dict_dpt = torch.load(f'./pretrained/depth_anything_v2_{args.encoder}.pth', map_location='cpu')
-            state_dict_dpt = torch.load(f'./pretrained/depth_anything_v2_{args.encoder}.pth', map_location='cpu')
+            state_dict_dpt = torch.load(f'./pretrained/depth_anything_v2_{args.encoder}.pth', map_location='cpu', weights_only=False)
+            state_dict_dpt = torch.load(f'./pretrained/depth_anything_v2_{args.encoder}.pth', map_location='cpu', weights_only=False)
             depth_anything.load_state_dict(state_dict_dpt, strict=True)
             depth_anything_decoder.load_state_dict(state_dict_dpt, strict=False)
             
@@ -380,7 +380,7 @@ class Monster(nn.Module):
                     local_path = os.path.join(pretrained_dir, fname)
                     if os.path.exists(local_path):
                         try:
-                            state_dict = torch.load(local_path, map_location="cpu")
+                            state_dict = torch.load(local_path, map_location="cpu", weights_only=False)
                             if "model" in state_dict:
                                 state_dict = state_dict["model"]
                             elif "teacher" in state_dict:
