@@ -454,7 +454,7 @@ if __name__ == '__main__':
     parser.add_argument('--valid_iters', type=int, default=32, help='number of flow-field updates during forward pass')
 
     # Architecure choices
-    parser.add_argument('--encoder', type=str, default='vitl', choices=['vits', 'vitb', 'vitl', 'vitg'])
+    parser.add_argument('--encoder', type=str, default='vitl', choices=['vits', 'vitb', 'vitl', 'vitg', 'dinov3_vits14', 'dinov3_vitb14', 'dinov3_vitl14', 'vits_dd', 'vitb_dd', 'vitl_dd', 'vitg_dd'])
     parser.add_argument('--hidden_dims', nargs='+', type=int, default=[128]*3, help="hidden state and context dimensions")
     parser.add_argument('--corr_implementation', choices=["reg", "alt", "reg_cuda", "alt_cuda"], default="reg", help="correlation volume implementation")
     parser.add_argument('--shared_backbone', action='store_true', help="use a single backbone for the context and feature encoders")
@@ -482,7 +482,7 @@ if __name__ == '__main__':
         logging.info("Loading checkpoint...")
         logging.info(args.restore_ckpt)
         assert os.path.exists(args.restore_ckpt)
-        checkpoint = torch.load(args.restore_ckpt)
+        checkpoint = torch.load(args.restore_ckpt, weights_only=False)
         ckpt = dict()
         if 'state_dict' in checkpoint.keys():
             checkpoint = checkpoint['state_dict']
