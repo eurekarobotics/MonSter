@@ -1,11 +1,54 @@
 import os
 os.environ['XFORMERS_AVAILABLE'] = "false"
 import torch
+import torch.nn as nn
 import argparse
 from pathlib import Path
 from core.monster import Monster
 from omegaconf import OmegaConf
 import torch.onnx
+
+
+def replace_instancenorm_with_groupnorm(model):
+    """
+    Replace all InstanceNorm2d/3d modules with equivalent GroupNorm modules.
+    This fixes ONNX export issues with dynamic shapes while preserving trained weights.
+    
+    GroupNorm(num_groups=num_channels, num_channels) is mathematically identical 
+    to InstanceNorm when each channel is its own group.
+    """
+    for name, module in model.named_children():
+        if isinstance(module, nn.InstanceNorm2d):
+            # Create equivalent GroupNorm (num_groups = num_channels = instance norm)
+            num_channels = module.num_features
+            new_module = nn.GroupNorm(
+                num_groups=num_channels,
+                num_channels=num_channels,
+                eps=module.eps,
+                affine=module.affine
+            )
+            # Copy weights if affine=True
+            if module.affine and module.weight is not None:
+                new_module.weight.data.copy_(module.weight.data)
+                new_module.bias.data.copy_(module.bias.data)
+            setattr(model, name, new_module)
+        elif isinstance(module, nn.InstanceNorm3d):
+            num_channels = module.num_features
+            new_module = nn.GroupNorm(
+                num_groups=num_channels,
+                num_channels=num_channels,
+                eps=module.eps,
+                affine=module.affine
+            )
+            if module.affine and module.weight is not None:
+                new_module.weight.data.copy_(module.weight.data)
+                new_module.bias.data.copy_(module.bias.data)
+            setattr(model, name, new_module)
+        else:
+            # Recursively process child modules
+            replace_instancenorm_with_groupnorm(module)
+    return model
+
 
 def export_to_onnx(checkpoint_path, config_path, output_path, input_shape=(1, 6, 480, 640), iters=32):
     """
@@ -45,6 +88,10 @@ def export_to_onnx(checkpoint_path, config_path, output_path, input_shape=(1, 6,
     
     # Set model to evaluation mode
     model.eval()
+    
+    # Replace InstanceNorm with GroupNorm for ONNX compatibility (mathematically identical)
+    print("Replacing InstanceNorm with GroupNorm for ONNX export...")
+    replace_instancenorm_with_groupnorm(model)
     
     # Create dummy input (concatenated left and right images)
     # Shape: (1, 6, 480, 640) where 6 = 3 (left) + 3 (right) channels
