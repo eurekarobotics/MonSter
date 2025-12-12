@@ -67,7 +67,7 @@ class RopePositionEmbedding(nn.Module):
         return (sin, cos)
     
     def _compute_coords(self, H: int, W: int, device, dtype) -> Tensor:
-        """Compute coordinates without runtime conditionals for ONNX/TensorRT compatibility."""
+        """Compute coordinates. Training augmentations only apply when self.training=True."""
         dd = {"device": device, "dtype": dtype}
         
         # Pre-dispatch based on normalize_coords (set at init time, not runtime)
@@ -87,9 +87,23 @@ class RopePositionEmbedding(nn.Module):
         coords = coords.flatten(0, 1)
         coords = 2.0 * coords - 1.0
         
-        # NOTE: Training augmentations (shift_coords, jitter_coords, rescale_coords) 
-        # are intentionally skipped for ONNX export since model is always in eval mode.
-        # These augmentations create ONNX If nodes that TensorRT cannot handle.
+        # Training augmentations - only applied during training
+        # These are skipped during ONNX export since model.eval() sets self.training=False
+        if self.training and self.shift_coords is not None:
+            shift_hw = torch.empty(2, **dd).uniform_(-self.shift_coords, self.shift_coords)
+            coords = coords + shift_hw[None, :]
+
+        if self.training and self.jitter_coords is not None:
+            jitter_max = np.log(self.jitter_coords)
+            jitter_min = -jitter_max
+            jitter_hw = torch.empty(2, **dd).uniform_(jitter_min, jitter_max).exp()
+            coords = coords * jitter_hw[None, :]
+
+        if self.training and self.rescale_coords is not None:
+            rescale_max = np.log(self.rescale_coords)
+            rescale_min = -rescale_max
+            rescale_hw = torch.empty(1, **dd).uniform_(rescale_min, rescale_max).exp()
+            coords = coords * rescale_hw
         
         return coords
 
