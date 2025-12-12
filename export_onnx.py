@@ -50,6 +50,69 @@ def replace_instancenorm_with_groupnorm(model):
     return model
 
 
+def precompute_rope_embeddings(model, input_height, input_width, patch_size=16):
+    """
+    Precompute RoPE embeddings for fixed input dimensions.
+    This replaces the rope_embed forward method with a pre-cached version
+    that returns constants, eliminating ONNX If nodes that TensorRT cannot handle.
+    
+    Args:
+        model: The Monster model
+        input_height: Input image height
+        input_width: Input image width  
+        patch_size: Patch size of the vision transformer (default 16 for DINOv3)
+    """
+    # Calculate patch grid dimensions
+    H = input_height // patch_size
+    W = input_width // patch_size
+    
+    def find_rope_modules(module, prefix=""):
+        """Recursively find all RoPE embedding modules."""
+        rope_modules = []
+        for name, child in module.named_children():
+            full_name = f"{prefix}.{name}" if prefix else name
+            # Check if this is a RopePositionEmbedding module
+            if 'rope_embed' in name.lower() or type(child).__name__ == 'RopePositionEmbedding':
+                rope_modules.append((full_name, child))
+            else:
+                rope_modules.extend(find_rope_modules(child, full_name))
+        return rope_modules
+    
+    rope_modules = find_rope_modules(model)
+    
+    for name, rope_module in rope_modules:
+        print(f"Precomputing RoPE embeddings for {name} with H={H}, W={W}")
+        
+        with torch.no_grad():
+            # Compute sin/cos once with fixed dimensions
+            sin_cached, cos_cached = rope_module(H=H, W=W)
+            
+            # Create a replacement module that returns cached values
+            class CachedRoPE(torch.nn.Module):
+                def __init__(self, sin_cache, cos_cache):
+                    super().__init__()
+                    # Register as buffers so they're included in ONNX export
+                    self.register_buffer('sin_cache', sin_cache.clone())
+                    self.register_buffer('cos_cache', cos_cache.clone())
+                
+                def forward(self, *, H: int, W: int):
+                    # Ignore H, W - return pre-cached values
+                    return (self.sin_cache, self.cos_cache)
+            
+            cached_rope = CachedRoPE(sin_cached, cos_cached)
+            cached_rope.eval()
+            
+            # Replace the module in the parent
+            parts = name.split('.')
+            parent = model
+            for part in parts[:-1]:
+                parent = getattr(parent, part)
+            setattr(parent, parts[-1], cached_rope)
+    
+    print(f"Replaced {len(rope_modules)} RoPE modules with cached versions")
+    return model
+
+
 def export_to_onnx(checkpoint_path, config_path, output_path, input_shape=(1, 6, 480, 640), iters=32):
     """
     Export trained Monster stereo model to ONNX format
@@ -92,6 +155,15 @@ def export_to_onnx(checkpoint_path, config_path, output_path, input_shape=(1, 6,
     # Replace InstanceNorm with GroupNorm for ONNX compatibility (mathematically identical)
     print("Replacing InstanceNorm with GroupNorm for ONNX export...")
     replace_instancenorm_with_groupnorm(model)
+    
+    # Precompute RoPE embeddings for DINOv3 models to eliminate ONNX If nodes
+    # that TensorRT cannot handle
+    if 'dinov3' in cfg.encoder:
+        input_height = input_shape[2]
+        input_width = input_shape[3]
+        patch_size = 16  # DINOv3 uses patch_size=16
+        print(f"Precomputing RoPE embeddings for DINOv3 (input: {input_height}x{input_width}, patch: {patch_size})...")
+        precompute_rope_embeddings(model, input_height, input_width, patch_size)
     
     # Create dummy input (concatenated left and right images)
     # Shape: (1, 6, 480, 640) where 6 = 3 (left) + 3 (right) channels
