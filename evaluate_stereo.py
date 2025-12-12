@@ -15,6 +15,128 @@ from utils.utils import InputPadder
 from PIL import Image
 import torch.nn.functional as F
 
+# Try to import ONNX Runtime (optional dependency)
+try:
+    import onnxruntime as ort
+    ONNX_AVAILABLE = True
+except ImportError:
+    ONNX_AVAILABLE = False
+    ort = None
+
+
+class ONNXModelWrapper:
+    """
+    Wrapper to run ONNX models with the same interface as PyTorch models.
+    This allows using the same validation functions for both model types.
+    Automatically handles resizing for fixed-dimension ONNX models.
+    """
+    def __init__(self, onnx_path, device='cuda'):
+        if not ONNX_AVAILABLE:
+            raise RuntimeError("onnxruntime is not installed. Install with: pip install onnxruntime-gpu")
+        
+        # Select execution provider based on device
+        if device == 'cuda' and 'CUDAExecutionProvider' in ort.get_available_providers():
+            providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
+        else:
+            providers = ['CPUExecutionProvider']
+        
+        print(f"Loading ONNX model from {onnx_path}")
+        print(f"Using providers: {providers}")
+        
+        self.session = ort.InferenceSession(onnx_path, providers=providers)
+        self.input_name = self.session.get_inputs()[0].name
+        self.output_name = self.session.get_outputs()[0].name
+        
+        # Get expected input shape from ONNX model
+        # Shape is typically [batch, channels, height, width]
+        input_shape = self.session.get_inputs()[0].shape
+        print(f"ONNX model input shape: {input_shape}")
+        print(f"ONNX model output name: {self.output_name}")
+        
+        # Extract expected dimensions (handle dynamic axes marked as strings or None)
+        self.expected_height = input_shape[2] if isinstance(input_shape[2], int) else None
+        self.expected_width = input_shape[3] if isinstance(input_shape[3], int) else None
+        
+        if self.expected_height and self.expected_width:
+            print(f"ONNX model expects fixed input size: {self.expected_height}x{self.expected_width}")
+            print("Images will be automatically resized to match model expectations")
+        else:
+            print("ONNX model accepts dynamic input sizes")
+    
+    def __call__(self, image1, image2, iters=None, test_mode=True):
+        """
+        Run inference with the same interface as PyTorch Monster model.
+        
+        Args:
+            image1: Left image tensor (B, 3, H, W)
+            image2: Right image tensor (B, 3, H, W)
+            iters: Ignored for ONNX (built into the exported model)
+            test_mode: Ignored for ONNX (always in test mode)
+        
+        Returns:
+            Disparity prediction tensor (B, 1, H, W) at original resolution
+        """
+        original_height, original_width = image1.shape[2], image1.shape[3]
+        
+        # Resize to expected model dimensions if needed
+        needs_resize = (self.expected_height is not None and 
+                        self.expected_width is not None and
+                        (original_height != self.expected_height or 
+                         original_width != self.expected_width))
+        
+        if needs_resize:
+            image1_resized = F.interpolate(
+                image1, 
+                size=(self.expected_height, self.expected_width), 
+                mode='bilinear', 
+                align_corners=False
+            )
+            image2_resized = F.interpolate(
+                image2, 
+                size=(self.expected_height, self.expected_width), 
+                mode='bilinear', 
+                align_corners=False
+            )
+        else:
+            image1_resized = image1
+            image2_resized = image2
+        
+        # Concatenate left and right images (ONNX model expects 6-channel input)
+        concat_input = torch.cat([image1_resized, image2_resized], dim=1)
+        
+        # Convert to numpy for ONNX Runtime
+        input_np = concat_input.cpu().numpy()
+        
+        # Run inference
+        outputs = self.session.run([self.output_name], {self.input_name: input_np})
+        
+        # Convert back to torch tensor
+        # Note: ONNX model outputs negative disparity, so we negate it back
+        disp = torch.from_numpy(-outputs[0]).to(image1.device)
+        
+        # Resize output back to original resolution if needed
+        if needs_resize:
+            # Scale disparity values proportionally when resizing
+            scale_factor = original_width / self.expected_width
+            disp = F.interpolate(
+                disp, 
+                size=(original_height, original_width), 
+                mode='bilinear', 
+                align_corners=False
+            )
+            disp = disp * scale_factor  # Scale disparity values
+        
+        return disp
+    
+    def eval(self):
+        """No-op for compatibility with PyTorch interface."""
+        return self
+    
+    def cuda(self):
+        """No-op for compatibility with PyTorch interface (ONNX handles device internally)."""
+        return self
+
+
 class NormalizeTensor(object):
     """Normalize a tensor by given mean and std."""
     
@@ -447,13 +569,13 @@ def validate_booster(model, iters=32, mixed_prec=False, image_size=(480, 640)):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--restore_ckpt', help="restore checkpoint", default="/data2/cjd/mono_fusion/checkpoints/sceneflow.pth")
+    parser.add_argument('--restore_ckpt', help="restore checkpoint (.pth) or ONNX model (.onnx)", default="/data2/cjd/mono_fusion/checkpoints/sceneflow.pth")
 
     parser.add_argument('--dataset', help="dataset for evaluation", default='sceneflow', choices=["eth3d", "kitti", "sceneflow", "vkitti", "driving", "booster"] + [f"middlebury_{s}" for s in 'FHQ'])
     parser.add_argument('--mixed_precision', default=False, action='store_true', help='use mixed precision')
     parser.add_argument('--valid_iters', type=int, default=32, help='number of flow-field updates during forward pass')
 
-    # Architecure choices
+    # Architecure choices (only needed for PyTorch models, ignored for ONNX)
     parser.add_argument('--encoder', type=str, default='vitl', choices=['vits', 'vitb', 'vitl', 'vitg', 'dinov3_vits14', 'dinov3_vitb14', 'dinov3_vitl14', 'vits_dd', 'vitb_dd', 'vitl_dd', 'vitg_dd'])
     parser.add_argument('--hidden_dims', nargs='+', type=int, default=[128]*3, help="hidden state and context dimensions")
     parser.add_argument('--corr_implementation', choices=["reg", "alt", "reg_cuda", "alt_cuda"], default="reg", help="correlation volume implementation")
@@ -466,41 +588,51 @@ if __name__ == '__main__':
     parser.add_argument('--max_disp', type=int, default=192, help="max disp of geometry encoding volume")
     args = parser.parse_args()
 
-    model = torch.nn.DataParallel(Monster(args), device_ids=[0])
-
-    total_params = sum(p.numel() for p in model.parameters()) / 1e6
-    print(f"Total number of parameters: {total_params:.2f}M")
-
-    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad) / 1e6
-    print(f"Total number of trainable parameters: {trainable_params:.2f}M")
-
     logging.basicConfig(level=logging.INFO,
                         format='%(asctime)s %(levelname)-8s [%(filename)s:%(lineno)d] %(message)s')
 
-    if args.restore_ckpt is not None:
-        assert args.restore_ckpt.endswith(".pth")
-        logging.info("Loading checkpoint...")
-        logging.info(args.restore_ckpt)
-        assert os.path.exists(args.restore_ckpt)
-        checkpoint = torch.load(args.restore_ckpt, weights_only=False)
-        ckpt = dict()
-        if 'state_dict' in checkpoint.keys():
-            checkpoint = checkpoint['state_dict']
-        for key in checkpoint:
-            # ckpt['module.' + key] = checkpoint[key]
-            if key.startswith("module."):
-                ckpt[key] = checkpoint[key]  # 保持原样
-            else:
-                ckpt["module." + key] = checkpoint[key]  # 添加 "module."
+    # Check if using ONNX model or PyTorch checkpoint
+    is_onnx_model = args.restore_ckpt is not None and args.restore_ckpt.endswith(".onnx")
+    
+    if is_onnx_model:
+        # Load ONNX model
+        logging.info("Using ONNX model for inference")
+        assert os.path.exists(args.restore_ckpt), f"ONNX model not found: {args.restore_ckpt}"
+        model = ONNXModelWrapper(args.restore_ckpt, device='cuda')
+        logging.info("ONNX model loaded successfully")
+        logging.info("Note: --valid_iters is ignored for ONNX models (iterations are baked into the model)")
+    else:
+        # Load PyTorch model (original behavior)
+        model = torch.nn.DataParallel(Monster(args), device_ids=[0])
 
-        model.load_state_dict(ckpt, strict=True)
+        total_params = sum(p.numel() for p in model.parameters()) / 1e6
+        print(f"Total number of parameters: {total_params:.2f}M")
 
-        logging.info(f"Done loading checkpoint")
+        trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad) / 1e6
+        print(f"Total number of trainable parameters: {trainable_params:.2f}M")
 
-    model.cuda()
-    model.eval()
+        if args.restore_ckpt is not None:
+            assert args.restore_ckpt.endswith(".pth"), f"Expected .pth file, got: {args.restore_ckpt}"
+            logging.info("Loading checkpoint...")
+            logging.info(args.restore_ckpt)
+            assert os.path.exists(args.restore_ckpt)
+            checkpoint = torch.load(args.restore_ckpt, map_location='cpu', weights_only=False)
+            ckpt = dict()
+            if 'state_dict' in checkpoint.keys():
+                checkpoint = checkpoint['state_dict']
+            for key in checkpoint:
+                if key.startswith("module."):
+                    ckpt[key] = checkpoint[key]
+                else:
+                    ckpt["module." + key] = checkpoint[key]
 
-    print(f"The model has {format(count_parameters(model)/1e6, '.2f')}M learnable parameters.")
+            model.load_state_dict(ckpt, strict=True)
+            logging.info(f"Done loading checkpoint")
+
+        model.cuda()
+        model.eval()
+        print(f"The model has {format(count_parameters(model)/1e6, '.2f')}M learnable parameters.")
+
     use_mixed_precision = args.corr_implementation.endswith("_cuda")
 
     if args.dataset == 'eth3d':
