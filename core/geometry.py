@@ -9,6 +9,12 @@ class Combined_Geo_Encoding_Volume:
         self.radius = radius
         self.geo_volume_pyramid = []
         self.init_corr_pyramid = []
+        
+        # Pre-compute dx tensor (optimization: avoid creating in every __call__)
+        r = radius
+        self.dx = torch.linspace(-r, r, 2*r+1).view(1, 1, 2*r+1, 1)
+        self.device = init_fmap1.device
+        self.dx = self.dx.to(self.device)
 
         # all pairs correlation
         init_corr = Combined_Geo_Encoding_Volume.corr(init_fmap1, init_fmap2)
@@ -32,13 +38,16 @@ class Combined_Geo_Encoding_Volume:
 
 
     def __call__(self, disp, coords):
+        print("Pre compute geometry volume................................")
         r = self.radius
         b, _, h, w = disp.shape
         out_pyramid = []
+        
+        # Use pre-computed dx (optimization: no tensor creation in hot path)
+        dx = self.dx
+        
         for i in range(self.num_levels):
             geo_volume = self.geo_volume_pyramid[i]
-            dx = torch.linspace(-r, r, 2*r+1)
-            dx = dx.view(1, 1, 2*r+1, 1).to(disp.device)
             x0 = dx + disp.reshape(b*h*w, 1, 1, 1) / 2**i
             y0 = torch.zeros_like(x0)
 
