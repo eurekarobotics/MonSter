@@ -67,6 +67,59 @@ def compute_scale_shift(monocular_depth, gt_depth, mask=None):
     return scale, shift
 
 
+def compute_scale_shift_batched(monocular_depth, gt_depth):
+    """
+    Batched version: compute scale and shift for all batch samples at once.
+    
+    Args:
+        monocular_depth: (B, H, W) tensor
+        gt_depth: (B, H, W) tensor
+    
+    Returns:
+        scale: (B,) tensor
+        shift: (B,) tensor
+    """
+    print("Vectorize compute scale shift....................................")
+    B, H, W = monocular_depth.shape
+    device = monocular_depth.device
+    
+    # Initialize outputs
+    scales = torch.ones(B, device=device, dtype=monocular_depth.dtype)
+    shifts = torch.zeros(B, device=device, dtype=monocular_depth.dtype)
+    
+    for i in range(B):
+        mono_i = monocular_depth[i]  # (H, W)
+        gt_i = gt_depth[i]  # (H, W)
+        
+        # Compute threshold for this sample
+        flattened = mono_i.view(-1)
+        sorted_vals, _ = torch.sort(flattened)
+        percentile_idx = int(0.2 * len(sorted_vals))
+        threshold = sorted_vals[percentile_idx]
+        
+        # Create mask
+        mask = (gt_i > 0) & (mono_i > 1e-2) & (mono_i > threshold)
+        
+        if mask.sum() < 10:  # Need enough points for regression
+            continue
+            
+        mono_flat = mono_i[mask]
+        gt_flat = gt_i[mask]
+        
+        # Least squares: [scale, shift] = (X^T X)^-1 X^T y
+        X = torch.stack([mono_flat, torch.ones_like(mono_flat)], dim=1)
+        y = gt_flat
+        
+        A = torch.matmul(X.t(), X) + 1e-6 * torch.eye(2, device=device, dtype=X.dtype)
+        b = torch.matmul(X.t(), y)
+        params = torch.linalg.solve(A, b)
+        
+        scales[i] = params[0]
+        shifts[i] = params[1]
+    
+    return scales, shifts
+
+
 class hourglass(nn.Module):
     def __init__(self, in_channels):
         super(hourglass, self).__init__()
@@ -534,11 +587,13 @@ class Monster(nn.Module):
             geo_feat = geo_fn(disp, coords)
             if itr > int(iters-8):
                 if itr == int(iters-7):
-                    bs, _, _, _ = disp.shape
-                    for i in range(bs):
-                        with torch.autocast(device_type='cuda', dtype=torch.float32): 
-                            scale, shift = compute_scale_shift(disp_mono_4x[i].clone().squeeze(1).to(torch.float32), disp[i].clone().squeeze(1).to(torch.float32))
-                        disp_mono_4x[i] = scale * disp_mono_4x[i] + shift
+                    with torch.autocast(device_type='cuda', dtype=torch.float32):
+                        # Batched scale-shift computation (optimization: no Python loop)
+                        mono_sq = disp_mono_4x.squeeze(1).to(torch.float32)  # [B, H, W]
+                        disp_sq = disp.squeeze(1).to(torch.float32)  # [B, H, W]
+                        scales, shifts = compute_scale_shift_batched(mono_sq, disp_sq)
+                        # Apply scale and shift: [B, 1, 1] for broadcasting
+                        disp_mono_4x = scales.view(-1, 1, 1, 1) * disp_mono_4x + shifts.view(-1, 1, 1, 1)
                 
                 warped_right_mono = disp_warp(features_right[0], disp_mono_4x.clone().to(features_right[0].dtype))[0]  
                 flaw_mono = warped_right_mono - features_left[0] 
