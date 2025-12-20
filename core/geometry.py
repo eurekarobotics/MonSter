@@ -38,7 +38,6 @@ class Combined_Geo_Encoding_Volume:
 
 
     def __call__(self, disp, coords):
-        print("Pre compute geometry volume................................")
         r = self.radius
         b, _, h, w = disp.shape
         out_pyramid = []

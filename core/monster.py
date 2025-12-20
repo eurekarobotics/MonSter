@@ -70,6 +70,7 @@ def compute_scale_shift(monocular_depth, gt_depth, mask=None):
 def compute_scale_shift_batched(monocular_depth, gt_depth):
     """
     Batched version: compute scale and shift for all batch samples at once.
+    ONNX/TensorRT compatible - no conditionals or dynamic-shape operations.
     
     Args:
         monocular_depth: (B, H, W) tensor
@@ -79,43 +80,58 @@ def compute_scale_shift_batched(monocular_depth, gt_depth):
         scale: (B,) tensor
         shift: (B,) tensor
     """
-    print("Vectorize compute scale shift....................................")
     B, H, W = monocular_depth.shape
     device = monocular_depth.device
+    dtype = monocular_depth.dtype
     
-    # Initialize outputs
-    scales = torch.ones(B, device=device, dtype=monocular_depth.dtype)
-    shifts = torch.zeros(B, device=device, dtype=monocular_depth.dtype)
+    # Compute per-sample 20th percentile threshold
+    # Flatten each sample and sort
+    mono_flat_all = monocular_depth.view(B, -1)  # [B, H*W]
+    sorted_vals, _ = torch.sort(mono_flat_all, dim=1)
+    percentile_idx = int(0.2 * (H * W))
+    thresholds = sorted_vals[:, percentile_idx]  # [B]
     
-    for i in range(B):
-        mono_i = monocular_depth[i]  # (H, W)
-        gt_i = gt_depth[i]  # (H, W)
-        
-        # Compute threshold for this sample
-        flattened = mono_i.view(-1)
-        sorted_vals, _ = torch.sort(flattened)
-        percentile_idx = int(0.2 * len(sorted_vals))
-        threshold = sorted_vals[percentile_idx]
-        
-        # Create mask
-        mask = (gt_i > 0) & (mono_i > 1e-2) & (mono_i > threshold)
-        
-        if mask.sum() < 10:  # Need enough points for regression
-            continue
-            
-        mono_flat = mono_i[mask]
-        gt_flat = gt_i[mask]
-        
-        # Least squares: [scale, shift] = (X^T X)^-1 X^T y
-        X = torch.stack([mono_flat, torch.ones_like(mono_flat)], dim=1)
-        y = gt_flat
-        
-        A = torch.matmul(X.t(), X) + 1e-6 * torch.eye(2, device=device, dtype=X.dtype)
-        b = torch.matmul(X.t(), y)
-        params = torch.linalg.solve(A, b)
-        
-        scales[i] = params[0]
-        shifts[i] = params[1]
+    # Create masks for valid pixels: [B, H, W]
+    thresholds_expanded = thresholds.view(B, 1, 1)
+    valid_mask = (gt_depth > 0) & (monocular_depth > 1e-2) & (monocular_depth > thresholds_expanded)
+    valid_mask_float = valid_mask.float()
+    
+    # Count valid pixels per sample
+    valid_count = valid_mask_float.sum(dim=(1, 2))  # [B]
+    
+    # Compute masked sums for least squares regression
+    # We need: sum(x), sum(x^2), sum(y), sum(xy), n
+    # where x = monocular_depth, y = gt_depth
+    
+    x = monocular_depth * valid_mask_float  # Zero out invalid pixels
+    y = gt_depth * valid_mask_float
+    
+    sum_x = x.sum(dim=(1, 2))  # [B]
+    sum_y = y.sum(dim=(1, 2))  # [B]
+    sum_xx = (x * x).sum(dim=(1, 2))  # [B]
+    sum_xy = (x * y).sum(dim=(1, 2))  # [B]
+    n = valid_count  # [B]
+    
+    # Solve 2x2 linear system for scale and shift:
+    # n * shift + sum_x * scale = sum_y
+    # sum_x * shift + sum_xx * scale = sum_xy
+    # 
+    # Matrix form: [[n, sum_x], [sum_x, sum_xx]] * [shift, scale]^T = [sum_y, sum_xy]^T
+    # Solution: scale = (n * sum_xy - sum_x * sum_y) / (n * sum_xx - sum_x^2)
+    #           shift = (sum_y - scale * sum_x) / n
+    
+    # Add small epsilon to avoid division by zero
+    eps = 1e-6
+    denominator = n * sum_xx - sum_x * sum_x + eps
+    
+    scales = (n * sum_xy - sum_x * sum_y) / denominator
+    shifts = (sum_y - scales * sum_x) / (n + eps)
+    
+    # Handle edge case: if too few valid pixels, use default scale=1, shift=0
+    # Use torch.where for ONNX compatibility (no Python if)
+    min_valid = 10.0
+    scales = torch.where(n >= min_valid, scales, torch.ones_like(scales))
+    shifts = torch.where(n >= min_valid, shifts, torch.zeros_like(shifts))
     
     return scales, shifts
 
@@ -477,7 +493,6 @@ class Monster(nn.Module):
         self.std = torch.tensor(std)
 
     def infer_mono(self, image1, image2):
-        print("Batch mono infer.....................................")
         height_ori, width_ori = image1.shape[2:]
         B = image1.shape[0]
         
