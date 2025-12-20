@@ -237,8 +237,10 @@ def validate_kitti(model, iters=32, mixed_prec=False):
 
         with torch.no_grad():
             with autocast(enabled=mixed_prec):
+                torch.cuda.synchronize()  # Ensure accurate timing
                 start = time.time()
                 flow_pr = model(image1, image2, iters=iters, test_mode=True)
+                torch.cuda.synchronize()  # Wait for GPU to finish
                 end = time.time()
 
         if val_id > 50:
@@ -293,8 +295,10 @@ def validate_vkitti(model, iters=32, mixed_prec=False):
         image1, image2 = padder.pad(image1, image2)
 
         with autocast(enabled=mixed_prec):
+            torch.cuda.synchronize()  # Ensure accurate timing
             start = time.time()
             flow_pr = model(image1, image2, iters=iters, test_mode=True)
+            torch.cuda.synchronize()  # Wait for GPU to finish
             end = time.time()
 
         if val_id > 50:
@@ -351,8 +355,10 @@ def validate_sceneflow(model, iters=32, mixed_prec=False):
         image1, image2 = padder.pad(image1, image2)
 
         with autocast(enabled=mixed_prec):
+            torch.cuda.synchronize()  # Ensure accurate timing
             start = time.time()
             flow_pr = model(image1, image2, iters=iters, test_mode=True)
+            torch.cuda.synchronize()  # Wait for GPU to finish
             end = time.time()
         # print(torch.cuda.memory_summary(device=None, abbreviated=False))
         if val_id > 50:
@@ -415,8 +421,10 @@ def validate_driving(model, iters=32, mixed_prec=False):
         image1, image2 = padder.pad(image1, image2)
 
         with torch.autocast(device_type='cuda', enabled=mixed_prec):
+            torch.cuda.synchronize()  # Ensure accurate timing
             start = time.time()
             flow_pr = model(image1, image2, iters=iters, test_mode=True)
+            torch.cuda.synchronize()  # Wait for GPU to finish
             end = time.time()
 
         if val_id > 50:
@@ -473,9 +481,11 @@ def validate_middlebury(model, iters=32, split='F', mixed_prec=False):
         padder = InputPadder(image1.shape, divis_by=32)
         image1, image2 = padder.pad(image1, image2)
 
+        torch.cuda.synchronize()  # Ensure accurate timing
         start_time = time.time()
         with autocast(enabled=mixed_prec):
             flow_pr = model(image1, image2, iters=iters, test_mode=True)
+        torch.cuda.synchronize()  # Wait for GPU to finish
         print(f"Inference time: {time.time() - start_time:.3f} seconds")
         flow_pr = padder.unpad(flow_pr).cpu().squeeze(0)
         # a = input('input something')
