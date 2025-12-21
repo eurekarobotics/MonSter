@@ -49,23 +49,30 @@ class SelfAttention(nn.Module):
         self.proj_drop = nn.Dropout(proj_drop)
 
     def apply_rope(self, q: Tensor, k: Tensor, rope: Tensor | Tuple[Tensor, Tensor]) -> Tuple[Tensor, Tensor]:
-        q_dtype = q.dtype
-        k_dtype = k.dtype
+        """Apply rotary position embeddings to q and k.
+        
+        Optimized: Convert sin/cos to q/k dtype instead of converting q/k to rope dtype.
+        This saves 4 dtype conversions per attention layer (96 total for 24-layer ViT-L).
+        """
         sin, cos = rope
-        rope_dtype = sin.dtype
-        q = q.to(dtype=rope_dtype)
-        k = k.to(dtype=rope_dtype)
+        
+        # Convert sin/cos to match q/k dtype (cheaper than converting q/k)
+        sin = sin.to(dtype=q.dtype)
+        cos = cos.to(dtype=q.dtype)
+        
         N = q.shape[-2]
         prefix = N - sin.shape[-2]
         assert prefix >= 0
+        
+        # Apply RoPE to patch tokens (skip prefix tokens like cls/storage)
         q_prefix = q[:, :, :prefix, :]
         q = rope_apply(q[:, :, prefix:, :], sin, cos)
         q = torch.cat((q_prefix, q), dim=-2)
+        
         k_prefix = k[:, :, :prefix, :]
         k = rope_apply(k[:, :, prefix:, :], sin, cos)
         k = torch.cat((k_prefix, k), dim=-2)
-        q = q.to(dtype=q_dtype)
-        k = k.to(dtype=k_dtype)
+        
         return q, k
 
     def forward(self, x: Tensor, attn_bias=None, rope: Tensor = None) -> Tensor:

@@ -43,7 +43,8 @@ class Combined_Geo_Encoding_Volume:
         out_pyramid = []
         
         # Use pre-computed dx (optimization: no tensor creation in hot path)
-        dx = self.dx
+        # Convert to disp's dtype for TensorRT compatibility (avoids NaN in FP16)
+        dx = self.dx.to(dtype=disp.dtype)
         
         for i in range(self.num_levels):
             geo_volume = self.geo_volume_pyramid[i]

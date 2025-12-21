@@ -235,10 +235,11 @@ class DinoVisionTransformer(nn.Module):
             t2_x, hw_tuple = self.prepare_tokens_with_masks(t_x, t_masks)
             x.append(t2_x)
             rope.append(hw_tuple)
+        
+        # OPTIMIZATION: Pre-compute RoPE embeddings once (not per-layer)
+        rope_sincos = [self.rope_embed(H=H, W=W) for H, W in rope]
+        
         for _, blk in enumerate(self.blocks):
-            # Always call rope_embed (it's always initialized in DINOv3)
-            # This avoids ONNX If nodes that TensorRT cannot handle
-            rope_sincos = [self.rope_embed(H=H, W=W) for H, W in rope]
             x = blk(x, rope_sincos)
         all_x = x
         output = []
@@ -276,10 +277,12 @@ class DinoVisionTransformer(nn.Module):
         x, (H, W) = self.prepare_tokens_with_masks(x)
         output, total_block_len = [], len(self.blocks)
         blocks_to_take = range(total_block_len - n, total_block_len) if isinstance(n, int) else n
+        
+        # OPTIMIZATION: Compute RoPE embeddings once (not per-layer)
+        # This saves 23 redundant computations for 24-layer ViT-L
+        rope_sincos = self.rope_embed(H=H, W=W)
+        
         for i, blk in enumerate(self.blocks):
-            # Always call rope_embed (it's always initialized in DINOv3)
-            # This avoids ONNX If nodes that TensorRT cannot handle
-            rope_sincos = self.rope_embed(H=H, W=W)
             x = blk(x, rope_sincos)
             if i in blocks_to_take:
                 output.append(x)
