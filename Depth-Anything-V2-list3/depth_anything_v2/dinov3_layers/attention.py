@@ -95,8 +95,9 @@ class SelfAttention(nn.Module):
         qkv = qkv.reshape(B, N, 3, self.num_heads, C // self.num_heads)
         q, k, v = torch.unbind(qkv, 2)
         q, k, v = [t.transpose(1, 2) for t in [q, k, v]]
-        if rope is not None:
-            q, k = self.apply_rope(q, k, rope)
+        # Always apply rope (DINOv3 always uses rope embeddings)
+        # Removing conditional avoids ONNX If nodes that TensorRT cannot handle
+        q, k = self.apply_rope(q, k, rope)
         x = torch.nn.functional.scaled_dot_product_attention(q, k, v)
         x = x.transpose(1, 2)
         return x.reshape([B, N, C])
