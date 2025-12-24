@@ -191,6 +191,92 @@ def build_gwc_volume_onnx(refimg_fea, targetimg_fea, maxdisp, num_groups):
     return volume
 
 
+def build_gwc_volume_onnx_v2(refimg_fea, targetimg_fea, maxdisp, num_groups):
+    """ONNX-compatible GWC volume using padding and masking.
+    
+    More memory efficient than build_gwc_volume_onnx as it avoids creating
+    separate padded tensors for ref and target per disparity.
+    
+    The original correlation is: ref[:,:,:,i:] * target[:,:,:,:-i]
+    This means ref columns i,i+1,... correlate with target columns 0,1,...
+    The result is placed at volume columns i,i+1,...
+    """
+    B, C, H, W = refimg_fea.shape
+    channels_per_group = C // num_groups
+    
+    # Reshape for group-wise operation
+    ref = refimg_fea.view(B, num_groups, channels_per_group, H, W)
+    target = targetimg_fea.view(B, num_groups, channels_per_group, H, W)
+    
+    volume_list = []
+    for i in range(maxdisp):
+        if i == 0:
+            corr = (ref * target).mean(dim=2)  # [B, num_groups, H, W]
+        else:
+            ref_slice = ref[:, :, :, :, i:]  # [B, num_groups, channels_per_group, H, W-i]
+            target_slice = target[:, :, :, :, :-i]  # [B, num_groups, channels_per_group, H, W-i]
+            corr_slice = (ref_slice * target_slice).mean(dim=2)  # [B, num_groups, H, W-i]
+            corr = F.pad(corr_slice, (i, 0, 0, 0), value=0)  # [B, num_groups, H, W]
+        volume_list.append(corr)
+    
+    volume = torch.stack(volume_list, dim=2)  # [B, num_groups, maxdisp, H, W]
+    return volume.contiguous()
+
+
+def build_gwc_volume_onnx_v3(refimg_fea, targetimg_fea, maxdisp, num_groups):
+    """ONNX-compatible GWC volume using gather-based shifting.
+    
+    More memory efficient than build_gwc_volume_onnx_v2 as it avoids creating
+    separate padded tensors for ref and target per disparity.
+    """
+    B, C, H, W = refimg_fea.shape
+    channels_per_group = C // num_groups
+    
+    # Pad target on the left side with zeros
+    # After padding: [B, C, H, W + maxdisp - 1]
+    target_padded = F.pad(targetimg_fea, (maxdisp - 1, 0, 0, 0), value=0)
+    W_padded = W + maxdisp - 1
+    
+    # Create index tensor for gathering shifted columns
+    # For disparity d, we want columns [maxdisp-1-d, maxdisp-d, ..., maxdisp-1-d+W-1]
+    # Shape: [maxdisp, W]
+    base_col_idx = torch.arange(W, device=refimg_fea.device).view(1, W)  # [1, W]
+    disp_offset = torch.arange(maxdisp - 1, -1, -1, device=refimg_fea.device).view(maxdisp, 1)  # [maxdisp, 1]
+    # Column indices for each disparity: [maxdisp, W]
+    col_indices = base_col_idx + disp_offset
+    
+    # Expand indices for gather: [B, C, H, maxdisp, W]
+    col_indices = col_indices.view(1, 1, 1, maxdisp, W).expand(B, C, H, maxdisp, W)
+    
+    # Expand target_padded to [B, C, H, 1, W_padded] then gather along last dim
+    target_expanded = target_padded.unsqueeze(3).expand(B, C, H, maxdisp, W_padded)
+    
+    # Gather to create shifted versions: [B, C, H, maxdisp, W]
+    target_shifted = torch.gather(target_expanded, dim=4, index=col_indices)
+    
+    # Reshape for group-wise correlation
+    ref = refimg_fea.view(B, num_groups, channels_per_group, H, W)
+    target_shifted = target_shifted.view(B, num_groups, channels_per_group, H, maxdisp, W)
+    
+    # Compute correlation for all disparities at once
+    # ref: [B, num_groups, channels_per_group, H, W]
+    # target_shifted: [B, num_groups, channels_per_group, H, maxdisp, W]
+    # Result: [B, num_groups, H, maxdisp, W]
+    volume = (ref.unsqueeze(4) * target_shifted).mean(dim=2)
+    
+    # Transpose to [B, num_groups, maxdisp, H, W]
+    volume = volume.permute(0, 1, 3, 2, 4)
+    
+    # Create mask for valid regions
+    # At disparity i, columns 0 to i-1 are invalid
+    disp_idx = torch.arange(maxdisp, device=refimg_fea.device).view(1, 1, maxdisp, 1, 1)
+    col_idx_mask = torch.arange(W, device=refimg_fea.device).view(1, 1, 1, 1, W)
+    mask = (col_idx_mask >= disp_idx).to(refimg_fea.dtype)
+    
+    volume = volume * mask
+    
+    return volume.contiguous()
+
 def norm_correlation(fea1, fea2):
     cost = torch.mean(((fea1/(torch.norm(fea1, 2, 1, True)+1e-05)) * (fea2/(torch.norm(fea2, 2, 1, True)+1e-05))), dim=1, keepdim=True)
     return cost
