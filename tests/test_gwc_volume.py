@@ -38,7 +38,7 @@ def test_onnx_matches_original(test_inputs):
     vol_orig = build_gwc_volume(ref, target, maxdisp, num_groups)
     vol_onnx = build_gwc_volume_onnx(ref, target, maxdisp, num_groups)
     
-    assert torch.allclose(vol_orig, vol_onnx, rtol=1e-4, atol=1e-5)
+    assert torch.allclose(vol_orig, vol_onnx, rtol=1e-6, atol=1e-7)
 
 
 def test_v2_matches_original(test_inputs):
@@ -48,7 +48,7 @@ def test_v2_matches_original(test_inputs):
     vol_orig = build_gwc_volume(ref, target, maxdisp, num_groups)
     vol_v2 = build_gwc_volume_onnx_v2(ref, target, maxdisp, num_groups)
     
-    assert torch.allclose(vol_orig, vol_v2, rtol=1e-4, atol=1e-5)
+    assert torch.allclose(vol_orig, vol_v2, rtol=1e-6, atol=1e-7)
 
 
 def test_v3_matches_original(test_inputs):
@@ -58,7 +58,7 @@ def test_v3_matches_original(test_inputs):
     vol_orig = build_gwc_volume(ref, target, maxdisp, num_groups)
     vol_v3 = build_gwc_volume_onnx_v3(ref, target, maxdisp, num_groups)
     
-    assert torch.allclose(vol_orig, vol_v3, rtol=1e-4, atol=1e-5)
+    assert torch.allclose(vol_orig, vol_v3, rtol=1e-6, atol=1e-7)
 
 
 if __name__ == '__main__':
