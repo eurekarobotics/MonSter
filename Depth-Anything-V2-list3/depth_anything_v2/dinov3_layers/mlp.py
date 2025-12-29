@@ -73,4 +73,5 @@ class SwiGLUFFN(nn.Module, ListForwardMixin):
         x1 = self.w1(x)
         x2 = self.w2(x)
         hidden = F.silu(x1) * x2
+        hidden = hidden.clamp(min=-65504, max=65504)
         return self.w3(hidden)

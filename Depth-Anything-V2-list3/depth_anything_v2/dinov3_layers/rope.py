@@ -58,11 +58,13 @@ class RopePositionEmbedding(nn.Module):
         # This avoids ONNX If nodes that TensorRT can't handle
         coords = self._compute_coords(H, W, device, dtype)
         
-        angles = 2 * math.pi * coords[:, :, None] / self.periods[None, None, :]
+        coords_f32 = coords.float()
+        periods_f32 = self.periods.float()
+        angles = 2 * math.pi * coords_f32[:, :, None] / periods_f32[None, None, :]
         angles = angles.flatten(1, 2)
         angles = angles.tile(2)
-        cos = torch.cos(angles)
-        sin = torch.sin(angles)
+        cos = torch.cos(angles).to(dtype)
+        sin = torch.sin(angles).to(dtype)
 
         return (sin, cos)
     

@@ -8,6 +8,7 @@ import torch
 from torch import Tensor, nn
 
 class RMSNorm(nn.Module):
+    """RMSNorm"""
     def __init__(self, dim: int, eps: float = 1e-5):
         super().__init__()
         self.weight = nn.Parameter(torch.ones(dim))
@@ -17,8 +18,10 @@ class RMSNorm(nn.Module):
         nn.init.constant_(self.weight, 1)
 
     def _norm(self, x: Tensor) -> Tensor:
-        return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
+        x_f32 = x.float()
+        rms = x_f32.pow(2).mean(-1, keepdim=True).clamp(min=self.eps)
+        return x_f32 * torch.rsqrt(rms)
 
     def forward(self, x: Tensor) -> Tensor:
-        output = self._norm(x.float()).type_as(x)
+        output = self._norm(x).type_as(x)
         return output * self.weight

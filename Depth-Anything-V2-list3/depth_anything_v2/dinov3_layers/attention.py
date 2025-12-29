@@ -13,15 +13,18 @@ from .utils import cat_keep_shapes, uncat_with_shapes
 from .rope import rope_apply
 
 class LinearKMaskedBias(nn.Linear):
+    """Linear layer with masked K bias for DINOv3."""
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         o = self.out_features
         assert o % 3 == 0
         if self.bias is not None:
-            self.register_buffer("bias_mask", torch.full_like(self.bias, fill_value=math.nan))
+            bias_mask = torch.ones_like(self.bias)
+            bias_mask[o // 3 : 2 * o // 3] = 0.0  # Mask K bias to 0
+            self.register_buffer("bias_mask", bias_mask)
 
     def forward(self, input: Tensor) -> Tensor:
-        masked_bias = self.bias * self.bias_mask.to(self.bias.dtype) if self.bias is not None else None
+        masked_bias = self.bias * self.bias_mask if self.bias is not None else None
         return F.linear(input, self.weight, masked_bias)
 
 
@@ -49,22 +52,20 @@ class SelfAttention(nn.Module):
         self.proj_drop = nn.Dropout(proj_drop)
 
     def apply_rope(self, q: Tensor, k: Tensor, rope: Tensor | Tuple[Tensor, Tensor]) -> Tuple[Tensor, Tensor]:
-        """Apply rotary position embeddings to q and k.
-        
-        Optimized: Convert sin/cos to q/k dtype instead of converting q/k to rope dtype.
-        This saves 4 dtype conversions per attention layer (96 total for 24-layer ViT-L).
-        """
+        """Apply RoPE to q and k tensors."""
+        q_dtype = q.dtype
+        k_dtype = k.dtype
         sin, cos = rope
         
-        # Convert sin/cos to match q/k dtype (cheaper than converting q/k)
-        sin = sin.to(dtype=q.dtype)
-        cos = cos.to(dtype=q.dtype)
+        q = q.float()
+        k = k.float()
+        sin = sin.float()
+        cos = cos.float()
         
         N = q.shape[-2]
         prefix = N - sin.shape[-2]
         assert prefix >= 0
         
-        # Apply RoPE to patch tokens (skip prefix tokens like cls/storage)
         q_prefix = q[:, :, :prefix, :]
         q = rope_apply(q[:, :, prefix:, :], sin, cos)
         q = torch.cat((q_prefix, q), dim=-2)
@@ -73,6 +74,9 @@ class SelfAttention(nn.Module):
         k = rope_apply(k[:, :, prefix:, :], sin, cos)
         k = torch.cat((k_prefix, k), dim=-2)
         
+        # Convert back to original dtype
+        q = q.to(dtype=q_dtype)
+        k = k.to(dtype=k_dtype)
         return q, k
 
     def forward(self, x: Tensor, attn_bias=None, rope: Tensor = None) -> Tensor:
