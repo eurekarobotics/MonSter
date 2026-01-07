@@ -191,7 +191,7 @@ def build_gwc_volume_onnx(refimg_fea, targetimg_fea, maxdisp, num_groups):
     return volume
 
 
-def build_gwc_volume_onnx_fix1(refimg_fea, targetimg_fea, maxdisp, num_groups):
+def build_gwc_volume_onnx_v2(refimg_fea, targetimg_fea, maxdisp, num_groups):
     """ONNX-compatible GWC volume using padding and masking.
     
     More memory efficient than build_gwc_volume_onnx as it avoids creating
@@ -223,7 +223,7 @@ def build_gwc_volume_onnx_fix1(refimg_fea, targetimg_fea, maxdisp, num_groups):
     return volume.contiguous()
 
 
-def build_gwc_volume_onnx_fix2(refimg_fea, targetimg_fea, maxdisp, num_groups):
+def build_gwc_volume_onnx_v3(refimg_fea, targetimg_fea, maxdisp, num_groups):
     """ONNX-compatible GWC volume using gather-based shifting."""
     B, C, H, W = refimg_fea.shape
     channels_per_group = C // num_groups
@@ -393,3 +393,165 @@ class Propagation_prob(nn.Module):
 
 
         return prob_volume_propa
+
+
+# =============================================================================
+# Hierarchical Search Functions
+# =============================================================================
+
+def get_cur_disp_range_samples(cur_disp, ndisp, disp_interval_pixel, shape):
+    """Generate disparity samples centered around current estimate.
+    
+    This function creates a local search range around the current disparity
+    estimate, enabling coarse-to-fine hierarchical matching.
+    
+    Args:
+        cur_disp: (B, H, W) current disparity estimate from previous scale
+        ndisp: Number of disparity samples (e.g., 15 or 13)
+        disp_interval_pixel: Spacing between samples in pixels (e.g., 2 or 1)
+        shape: Expected shape [B, H, W] for validation
+    
+    Returns:
+        disp_range_samples: (B, D, H, W) disparity hypotheses centered around estimate
+    """
+    w = float(cur_disp.shape[2])
+    
+    # Compute min/max disparity, clamped to valid range
+    cur_disp_min = (cur_disp - ndisp / 2 * disp_interval_pixel).clamp(min=0.0)
+    cur_disp_max = (cur_disp_min + (ndisp - 1) * disp_interval_pixel).clamp(max=w)
+    
+    assert cur_disp.shape == torch.Size(shape), \
+        f"cur_disp shape {cur_disp.shape} != expected {shape}"
+    
+    # Compute adaptive interval (may be smaller near image edges)
+    new_interval = (cur_disp_max - cur_disp_min) / (ndisp - 1)
+    
+    # Generate sample grid: [0, 1, 2, ..., ndisp-1] * interval + min
+    disp_indices = torch.arange(0, ndisp, device=cur_disp.device,
+                                dtype=cur_disp.dtype,
+                                requires_grad=False).reshape(1, -1, 1, 1)
+    disp_range_samples = cur_disp_min.unsqueeze(1) + disp_indices * new_interval.unsqueeze(1)
+    
+    return disp_range_samples  # [B, D, H, W]
+
+
+def get_warped_feats(ref_fea, tgt_fea, disp_range_samples, ndisp):
+    """Warp target features to reference view at all disparity samples.
+    
+    Uses grid_sample to efficiently warp target features to reference
+    coordinate system for each disparity hypothesis.
+    
+    Args:
+        ref_fea: (B, C, H, W) reference image features
+        tgt_fea: (B, C, H, W) target image features  
+        disp_range_samples: (B, D, H, W) disparity hypotheses
+        ndisp: Number of disparity samples
+    
+    Returns:
+        ref_warped: (B, C, D, H, W) reference features expanded
+        tgt_warped: (B, C, D, H, W) target features warped to reference view
+    """
+    bs, channels, height, width = tgt_fea.size()
+    
+    # Create coordinate grids
+    mh, mw = torch.meshgrid(
+        torch.arange(0, height, dtype=ref_fea.dtype, device=ref_fea.device),
+        torch.arange(0, width, dtype=ref_fea.dtype, device=ref_fea.device),
+        indexing='ij'
+    )
+    mh = mh.reshape(1, 1, height, width).repeat(bs, ndisp, 1, 1)
+    mw = mw.reshape(1, 1, height, width).repeat(bs, ndisp, 1, 1)  # (B, D, H, W)
+    
+    # Compute warped coordinates: x_target = x_ref - disparity
+    cur_disp_coords_y = mh
+    cur_disp_coords_x = mw - disp_range_samples
+    
+    # Normalize to [-1, 1] for grid_sample
+    coords_x = cur_disp_coords_x / ((width - 1.0) / 2.0) - 1.0
+    coords_y = cur_disp_coords_y / ((height - 1.0) / 2.0) - 1.0
+    grid = torch.stack([coords_x, coords_y], dim=4)  # (B, D, H, W, 2)
+    
+    # Warp target features
+    tgt_warped = F.grid_sample(
+        tgt_fea, 
+        grid.view(bs, ndisp * height, width, 2), 
+        mode='bilinear',
+        padding_mode='zeros',
+        align_corners=True
+    ).view(bs, channels, ndisp, height, width)  # (B, C, D, H, W)
+    
+    # Expand reference features
+    ref_warped = ref_fea.unsqueeze(2).repeat(1, 1, ndisp, 1, 1)  # (B, C, D, H, W)
+    
+    # Mask out invalid regions (where x_target < 0, i.e., x_ref < disparity)
+    ref_warped = ref_warped.transpose(0, 1)  # (C, B, D, H, W)
+    mask = mw < disp_range_samples
+    ref_warped = torch.where(mask.unsqueeze(0), torch.zeros_like(ref_warped), ref_warped)
+    ref_warped = ref_warped.transpose(0, 1)  # (B, C, D, H, W)
+    
+    return ref_warped, tgt_warped
+
+
+def build_gwc_volume_selective(refimg_fea, targetimg_fea, disp_range_samples, ndisps, num_groups):
+    """Build group-wise correlation volume only at specified disparity samples.
+    
+    This is the key function for hierarchical search: instead of building
+    a full cost volume over all disparities, we only compute correlations
+    at the local samples around the current estimate.
+    
+    Args:
+        refimg_fea: (B, C, H, W) reference image features
+        targetimg_fea: (B, C, H, W) target image features
+        disp_range_samples: (B, D, H, W) local disparity hypotheses
+        ndisps: Number of disparity samples
+        num_groups: Number of groups for group-wise correlation
+    
+    Returns:
+        gwc_cost: (B, num_groups, ndisps, H, W) local cost volume
+    """
+    bs, channels, height, width = refimg_fea.size()
+    
+    # Warp features at all disparity samples
+    ref_warped, tgt_warped = get_warped_feats(
+        refimg_fea, targetimg_fea, disp_range_samples, ndisps
+    )  # Both (B, C, D, H, W)
+    
+    # Compute group-wise correlation
+    assert channels % num_groups == 0
+    channels_per_group = channels // num_groups
+    
+    # Element-wise product
+    gwc_raw = ref_warped * tgt_warped  # (B, C, D, H, W)
+    
+    # Reshape and mean over channels per group
+    gwc_cost = gwc_raw.view(
+        bs, num_groups, channels_per_group, ndisps, height, width
+    ).mean(dim=2)  # (B, num_groups, ndisps, H, W)
+    
+    return gwc_cost.contiguous()
+
+
+def context_upsample_2x(disp_low, up_weights):
+    """Upsample disparity by 2x using learned context weights.
+    
+    Used for inter-scale disparity propagation in hierarchical search.
+    
+    Args:
+        disp_low: (B, 1, H, W) low-resolution disparity
+        up_weights: (B, 9, 2*H, 2*W) upsampling weights
+    
+    Returns:
+        disp: (B, 2*H, 2*W) upsampled disparity
+    """
+    b, c, h, w = disp_low.shape
+    
+    # Unfold 3x3 neighborhoods
+    disp_unfold = F.unfold(disp_low.reshape(b, c, h, w), 3, 1, 1).reshape(b, -1, h, w)
+    
+    # Upsample to 2x resolution
+    disp_unfold = F.interpolate(disp_unfold, (h * 2, w * 2), mode='nearest').reshape(b, 9, h * 2, w * 2)
+    
+    # Weighted sum
+    disp = (disp_unfold * up_weights).sum(1)
+    
+    return disp

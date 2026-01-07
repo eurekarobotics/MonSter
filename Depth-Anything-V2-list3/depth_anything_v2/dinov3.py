@@ -533,7 +533,6 @@ def DINOv3(model_name):
         'dinov3_vits14': dinov3_vits16, 
         'dinov3_vitb14': dinov3_vitb16,
         'dinov3_vitl14': dinov3_vitl16,
-        
         'vits': dinov3_vits16,
         'vitb': dinov3_vitb16,
         'vitl': dinov3_vitl16,
@@ -553,7 +552,12 @@ def DINOv3(model_name):
 
     print(f"Loading DINOv3 model: {model_name} with default patch_size (16)")
     
-    # Weights loading is now handled inside the factory function, checking ./pretrained/ first
-    model = fn(pretrained=True) 
+    # Try loading pretrained weights, fall back to random init if not available
+    try:
+        model = fn(pretrained=True)
+    except Exception as e:
+        print(f"Warning: Failed to load pretrained weights for {model_name}: {e}")
+        print("Initializing model with random weights...")
+        model = fn(pretrained=False)
     
     return DINOv3Wrapper(model, model.embed_dim)

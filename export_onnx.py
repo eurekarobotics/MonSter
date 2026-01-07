@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 import argparse
 from pathlib import Path
-from core.monster import Monster
+from core.monster import Monster, MonsterV2
 from omegaconf import OmegaConf
 import torch.onnx
 
@@ -113,41 +113,49 @@ def precompute_rope_embeddings(model, input_height, input_width, patch_size=16):
     return model
 
 
-def export_to_onnx(checkpoint_path, config_path, output_path, input_shape=(1, 6, 480, 640), iters=32):
+def export_to_onnx(checkpoint_path, config_path, output_path, input_shape=(1, 6, 480, 640), iters=32, use_v2=False):
     """
-    Export trained Monster stereo model to ONNX format
+    Export trained Monster/MonsterV2 stereo model to ONNX format
     
     Args:
         checkpoint_path: Path to the trained model checkpoint (.pth file)
         config_path: Path to the model configuration file
         output_path: Output path for the ONNX model
         input_shape: Input tensor shape (batch_size, channels, height, width)
+        iters: Number of iterations (for Monster, MonsterV2 uses scale_iters from config)
+        use_v2: If True, use MonsterV2 (hierarchical) instead of Monster
     """
     
     # Load configuration
     cfg = OmegaConf.load(config_path)
     
     # Initialize model
-    model = Monster(cfg, export_onnx=True)
-    
-    # Load checkpoint
-    print(f"Loading checkpoint from {checkpoint_path}")
-    checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
-    
-    # Handle different checkpoint formats
-    if 'state_dict' in checkpoint.keys():
-        state_dict = checkpoint['state_dict']
+    if use_v2:
+        print("Using MonsterV2 (hierarchical) model")
+        model = MonsterV2(cfg, export_onnx=True)
     else:
-        state_dict = checkpoint
+        print("Using Monster (original) model")
+        model = Monster(cfg, export_onnx=True)
     
-    # Remove 'module.' prefix if present (from DataParallel)
-    cleaned_state_dict = {}
-    for key, value in state_dict.items():
-        cleaned_key = key.replace('module.', '')
-        cleaned_state_dict[cleaned_key] = value
-    
-    model.load_state_dict(cleaned_state_dict, strict=True)
-    print("Model loaded successfully")
+    # Load checkpoint if provided
+    if checkpoint_path and checkpoint_path != 'none':
+        print(f"Loading checkpoint from {checkpoint_path}")
+        checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
+        
+        # Handle different checkpoint formats
+        if 'state_dict' in checkpoint.keys():
+            state_dict = checkpoint['state_dict']
+        else:
+            state_dict = checkpoint
+        
+        # Remove 'module.' prefix if present (from DataParallel)
+        cleaned_state_dict = {}
+        for key, value in state_dict.items():
+            cleaned_key = key.replace('module.', '')
+            cleaned_state_dict[cleaned_key] = value
+        
+        model.load_state_dict(cleaned_state_dict, strict=True)
+        print("Model loaded successfully")
     
     # Set model to evaluation mode
     model.eval()
@@ -185,6 +193,7 @@ def export_to_onnx(checkpoint_path, config_path, output_path, input_shape=(1, 6,
             right = concat_input[:, 3:, :, :]
             
             # Get disparity prediction in test mode
+            # MonsterV2 ignores iters and uses scale_iters from config
             disp_pred = self.model(left, right, iters=self.iters, test_mode=True)
             
             # Return negative disparity as specified
@@ -192,11 +201,7 @@ def export_to_onnx(checkpoint_path, config_path, output_path, input_shape=(1, 6,
     
     # Wrap model for ONNX export
     wrapped_model = ONNXWrapper(model, iters=iters)
-    # wrapped_model = ONNXWrapper(model, iters=getattr(cfg, 'valid_iters', 12))
 
-    # wrapped_model.cuda()
-    # dummy_input = dummy_input.cuda()
-    
     # Export to ONNX
     print(f"Exporting model to {output_path}")
     torch.onnx.export(
@@ -221,13 +226,14 @@ def export_to_onnx(checkpoint_path, config_path, output_path, input_shape=(1, 6,
     print(f"Output shape: (1, {input_shape[2]}, {input_shape[3]})")
 
 def main():
-    parser = argparse.ArgumentParser(description='Export Monster stereo model to ONNX')
-    parser.add_argument('--checkpoint', required=True, help='Path to model checkpoint')
+    parser = argparse.ArgumentParser(description='Export Monster/MonsterV2 stereo model to ONNX')
+    parser.add_argument('--checkpoint', default=None, help='Path to model checkpoint')
     parser.add_argument('--config', required=True, help='Path to model config file')
     parser.add_argument('--output', required=True, help='Output ONNX file path')
     parser.add_argument('--height', type=int, default=480, help='Input height')
     parser.add_argument('--width', type=int, default=640, help='Input width')
     parser.add_argument('--iters', type=int, default=20, help='Number of iterations for disparity prediction')
+    parser.add_argument('--v2', action='store_true', help='Use MonsterV2 (hierarchical) instead of Monster')
     
     args = parser.parse_args()
     print(f"Arguments: {args}")
@@ -239,8 +245,10 @@ def main():
         config_path=args.config,
         output_path=args.output,
         input_shape=input_shape,
-        iters=args.iters
+        iters=args.iters,
+        use_v2=args.v2
     )
 
 if __name__ == '__main__':
     main()
+

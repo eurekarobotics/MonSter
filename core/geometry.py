@@ -37,7 +37,19 @@ class Combined_Geo_Encoding_Volume:
 
 
 
-    def __call__(self, disp, coords):
+    def __call__(self, disp, coords, ndisps=None):
+        """Sample from geo-encoding volume at current disparity estimates.
+        
+        Args:
+            disp: (B, 1, H, W) current disparity estimate
+            coords: (B, H, W, 1) x-coordinates of reference image
+            ndisps: If provided, use local mode where geo_volume has shape 
+                    [B, 8, ndisps, H, W] and we sample around the center.
+                    If None, use full volume mode with absolute disparity.
+        
+        Returns:
+            out: (B, C, H, W) sampled features
+        """
         r = self.radius
         b, _, h, w = disp.shape
         out_pyramid = []
@@ -48,7 +60,17 @@ class Combined_Geo_Encoding_Volume:
         
         for i in range(self.num_levels):
             geo_volume = self.geo_volume_pyramid[i]
-            x0 = dx + disp.reshape(b*h*w, 1, 1, 1) / 2**i
+            
+            if ndisps is not None:
+                # Local mode: sample around center of local volume
+                # geo_volume has disparity dim = ndisps, center is at ndisps//2
+                center = torch.tensor([ndisps // 2], dtype=disp.dtype, device=disp.device)
+                center = center.view(1, 1, 1, 1).expand(b * h * w, 1, 1, 1)
+                x0 = dx + center
+            else:
+                # Full mode: use absolute disparity values
+                x0 = dx + disp.reshape(b*h*w, 1, 1, 1) / 2**i
+            
             y0 = torch.zeros_like(x0)
 
             disp_lvl = torch.cat([x0,y0], dim=-1)

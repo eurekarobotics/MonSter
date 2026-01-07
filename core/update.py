@@ -561,3 +561,155 @@ class BasicMotionEncoder_mix2(nn.Module):
         out_mono = F.relu(self.conv_mono(cor_disp_mono))
 
         return torch.cat([out, disp, out_mono, disp_mono], dim=1)
+
+
+# =============================================================================
+# MonsterV2 Single-Layer ConvGRU
+# =============================================================================
+
+class BasicMotionEncoderMono(nn.Module):
+    """Motion encoder with mono disparity input for hierarchical updates.
+    
+    Takes stereo disparity, mono disparity, and correlation features as input.
+    Used at each scale in the hierarchical pipeline.
+    
+    Args:
+        args: Config with corr_levels and corr_radius
+        corr_radius: Correlation lookup radius for this scale
+    """
+    def __init__(self, args, corr_radius):
+        super(BasicMotionEncoderMono, self).__init__()
+        self.args = args
+        cor_planes = args.corr_levels * (2 * corr_radius + 1) * (8 + 1)
+        
+        # Correlation feature processing
+        self.convc1 = nn.Conv2d(cor_planes, 64, 1, padding=0)
+        self.convc2 = nn.Conv2d(64, 64, 3, padding=1)
+        
+        # Stereo disparity processing
+        self.convd1 = nn.Conv2d(1, 64, 7, padding=3)
+        self.convd2 = nn.Conv2d(64, 64, 3, padding=1)
+        
+        # Mono disparity processing
+        self.convd1_mono = nn.Conv2d(1, 64, 7, padding=3)
+        self.convd2_mono = nn.Conv2d(64, 64, 3, padding=1)
+        
+        # Fuse all features
+        self.conv = nn.Conv2d(64 + 64 + 64, 128 - 1, 3, padding=1)
+
+    def forward(self, disp, disp_mono, corr):
+        # Process correlation
+        cor = F.relu(self.convc1(corr))
+        cor = F.relu(self.convc2(cor))
+        
+        # Process stereo disparity
+        disp_ = F.relu(self.convd1(disp))
+        disp_ = F.relu(self.convd2(disp_))
+        
+        # Process mono disparity
+        disp_mono_ = F.relu(self.convd1_mono(disp_mono))
+        disp_mono_ = F.relu(self.convd2_mono(disp_mono_))
+        
+        # Fuse and output
+        cor_disp = torch.cat([cor, disp_, disp_mono_], dim=1)
+        out = F.relu(self.conv(cor_disp))
+        return torch.cat([out, disp], dim=1)
+
+
+class BasicMultiUpdateBlockHierarchical(nn.Module):
+    """Hierarchical update block with single-layer ConvGRU per scale.
+    
+    Hierarchical style: at each scale, only ONE GRU layer runs with its own
+    motion encoder and disparity head. Context flows from coarser to finer scales.
+    
+    Architecture:
+        - 1/16: gru16_m only → disp_head_16x
+        - 1/8:  gru08_m only (with net[2] context) → disp_head_8x
+        - 1/4:  gru04 only (with net[1] context) → disp_head_4x
+    
+    Args:
+        args: Config with corr_radius list per scale, n_gru_layers, hidden_dims
+        hidden_dims: List of hidden dimensions [1/16, 1/8, 1/4]
+    """
+    def __init__(self, args, hidden_dims=[]):
+        super().__init__()
+        self.args = args
+        encoder_output_dim = 128
+        
+        # Per-scale motion encoders (with mono disparity input)
+        # args.corr_radius should be a list: [radius_16x, radius_8x, radius_4x]
+        corr_radii = args.corr_radius if isinstance(args.corr_radius, list) else [args.corr_radius] * 3
+        self.encoder16 = BasicMotionEncoderMono(args, corr_radii[0] if len(corr_radii) > 0 else 4)
+        self.encoder8 = BasicMotionEncoderMono(args, corr_radii[1] if len(corr_radii) > 1 else 4)
+        self.encoder4 = BasicMotionEncoderMono(args, corr_radii[2] if len(corr_radii) > 2 else 4)
+        
+        # Per-scale GRUs (single layer per scale)
+        # gru16_m: takes only motion features
+        self.gru16_m = ConvGRU(hidden_dims[0], encoder_output_dim)
+        # gru08_m: takes motion features + context from 1/16
+        self.gru08_m = ConvGRU(hidden_dims[1], encoder_output_dim + hidden_dims[0])
+        # gru04: takes motion features + context from 1/8
+        self.gru04 = ConvGRU(hidden_dims[2], encoder_output_dim + hidden_dims[1])
+        
+        # Per-scale disparity heads
+        self.disp_head_16x = DispHead(hidden_dims[0], hidden_dim=256, output_dim=1)
+        self.disp_head_8x = DispHead(hidden_dims[1], hidden_dim=256, output_dim=1)
+        self.disp_head_4x = DispHead(hidden_dims[2], hidden_dim=256, output_dim=1)
+        
+        # Per-scale mask feature extractors (for upsampling)
+        self.mask_feat_16 = nn.Sequential(
+            nn.Conv2d(hidden_dims[0], 32, 3, padding=1),
+            nn.ReLU(inplace=True)
+        )
+        self.mask_feat_8 = nn.Sequential(
+            nn.Conv2d(hidden_dims[1], 32, 3, padding=1),
+            nn.ReLU(inplace=True)
+        )
+        self.mask_feat_4 = nn.Sequential(
+            nn.Conv2d(hidden_dims[2], 32, 3, padding=1),
+            nn.ReLU(inplace=True)
+        )
+
+    def forward(self, net, inp, corr, disp, disp_mono, iter04=True, iter08=True, iter16=True):
+        """Forward pass with single-layer GRU at specified scale.
+        
+        Args:
+            net: List of GRU hidden states [net_4x, net_8x, net_16x]
+            inp: List of context inputs [inp_4x, inp_8x, inp_16x]
+            corr: Correlation features at current scale
+            disp: Current stereo disparity estimate
+            disp_mono: Current mono disparity estimate
+            iter04, iter08, iter16: Flags to select active scale
+                - (False, False, True) = 1/16 scale
+                - (False, True, True)  = 1/8 scale  
+                - (True, True, True)   = 1/4 scale
+        
+        Returns:
+            net: Updated hidden states
+            mask_feat: Mask features for upsampling
+            delta_disp: Disparity residual
+        """
+        if not iter04 and not iter08 and iter16:
+            # 1/16 scale: ONLY gru16_m runs
+            motion_features = self.encoder16(disp, disp_mono, corr)
+            net[2] = self.gru16_m(net[2], *(inp[2]), motion_features)
+            delta_disp = self.disp_head_16x(net[2])
+            mask_feat = self.mask_feat_16(net[2])
+            
+        elif not iter04 and iter08 and iter16:
+            # 1/8 scale: ONLY gru08_m runs, with context from 1/16
+            motion_features = self.encoder8(disp, disp_mono, corr)
+            net[1] = self.gru08_m(net[1], *(inp[1]), motion_features, interp(net[2], net[1]))
+            delta_disp = self.disp_head_8x(net[1])
+            mask_feat = self.mask_feat_8(net[1])
+            
+        elif iter04 and iter08 and iter16:
+            # 1/4 scale: ONLY gru04 runs, with context from 1/8
+            motion_features = self.encoder4(disp, disp_mono, corr)
+            net[0] = self.gru04(net[0], *(inp[0]), motion_features, interp(net[1], net[0]))
+            delta_disp = self.disp_head_4x(net[0])
+            mask_feat = self.mask_feat_4(net[0])
+        else:
+            raise ValueError(f"Invalid combination: iter04={iter04}, iter08={iter08}, iter16={iter16}")
+
+        return net, mask_feat, delta_disp
