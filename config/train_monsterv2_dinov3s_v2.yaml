@@ -42,8 +42,8 @@ use_hierarchical: True
 scale_iters: [4, 4, 8]
 
 # Local cost volume settings for finer scales (1/8, 1/4)
-ndisps: [19, 15]           # Number of disparity samples
-disp_intervals: [2, 1]     # Pixel spacing between samples
+ndisps: [21, 17]           # Number of disparity samples
+disp_intervals: [1.5, 0.75]     # Pixel spacing between samples
 
 # REMP refinement (optional, set to false for pure hierarchical style)
 use_remp: True
