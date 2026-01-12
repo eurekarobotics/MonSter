@@ -1,0 +1,49 @@
+wandb: {}
+project_name: monsterv2-dinov3s-v2
+restore_ckpt: null
+logdir: './checkpoints/monsterv2-dinov3s-v2/'
+encoder: 'dinov3_vits14'
+batch_size: 2
+gradient_accumulation_steps: 2
+train_datasets: ['mixed']
+lr: 5e-5
+wdecay: 1e-5
+total_step: 450000
+save_frequency: 1000
+save_path: './checkpoints/monsterv2-dinov3s-v2/'
+val_frequency: 1000
+image_size: [480, 640]
+train_iters: 8  # Ignored for hierarchical, uses scale_iters instead
+valid_iters: 8  # Ignored for hierarchical, uses scale_iters instead
+val_dataset: 'kitti'
+corr_implementation: "reg"
+corr_levels: 2
+corr_radius: 4
+n_downsample: 2
+n_gru_layers: 3
+hidden_dims: [128, 128, 128]
+max_disp: 576
+saturation_range: [0.0, 1.4]
+do_flip: True
+spatial_scale: [-0.2, 0.4]
+noyjitter: False
+num_gpu: 2
+seed: 666
+
+# ============================================================
+# MonsterV2-specific settings
+# ============================================================
+
+# Use hierarchical model instead of original Monster
+use_hierarchical: True
+
+# GRU iterations per scale [1/16, 1/8, 1/4]
+# [2,2,4]=8 iters -> 400% faster, [4,4,8]=16 iters -> 200% faster with better accuracy
+scale_iters: [4, 4, 8]
+
+# Local cost volume settings for finer scales (1/8, 1/4)
+ndisps: [19, 15]           # Number of disparity samples
+disp_intervals: [2, 1]     # Pixel spacing between samples
+
+# REMP refinement (optional, set to false for pure hierarchical style)
+use_remp: True
