@@ -187,6 +187,94 @@ class hourglass(nn.Module):
 
         return conv
 
+
+class hourglass_local(nn.Module):
+    """Lightweight hourglass for local cost volumes (13-17 disparities).
+    
+    Unlike full hourglass which does 3x downsampling, this only does 2x
+    downsampling to work with small disparity dimensions. Includes feature
+    attention for improved accuracy.
+    """
+    def __init__(self, in_channels, feat_channels=96):
+        super(hourglass_local, self).__init__()
+        
+        # Two-level encoder-decoder
+        self.conv1 = nn.Sequential(
+            BasicConv(in_channels, in_channels*2, is_3d=True, bn=True, relu=True, kernel_size=3, padding=1, stride=2),
+            BasicConv(in_channels*2, in_channels*2, is_3d=True, bn=True, relu=True, kernel_size=3, padding=1, stride=1)
+        )
+        
+        self.conv2 = nn.Sequential(
+            BasicConv(in_channels*2, in_channels*4, is_3d=True, bn=True, relu=True, kernel_size=3, padding=1, stride=2),
+            BasicConv(in_channels*4, in_channels*4, is_3d=True, bn=True, relu=True, kernel_size=3, padding=1, stride=1)
+        )
+        
+        # Decoder
+        self.conv2_up = nn.Sequential(
+            BasicConv(in_channels*4, in_channels*2, is_3d=True, bn=True, relu=True, kernel_size=3, padding=1, stride=1),
+        )
+        
+        self.conv1_up = nn.Sequential(
+            BasicConv(in_channels*2, in_channels, is_3d=True, bn=True, relu=True, kernel_size=3, padding=1, stride=1),
+        )
+        
+        # Skip connection aggregation
+        self.agg_1 = nn.Sequential(
+            BasicConv(in_channels*4, in_channels*2, is_3d=True, kernel_size=1, padding=0, stride=1),
+            BasicConv(in_channels*2, in_channels*2, is_3d=True, kernel_size=3, padding=1, stride=1)
+        )
+        
+        self.agg_0 = nn.Sequential(
+            BasicConv(in_channels*2, in_channels, is_3d=True, kernel_size=1, padding=0, stride=1),
+            BasicConv(in_channels, in_channels, is_3d=True, kernel_size=3, padding=1, stride=1)
+        )
+        
+        # Feature attention at each level (features will be downsampled to match)
+        self.feature_att_1 = FeatureAtt(in_channels*2, feat_channels)
+        self.feature_att_2 = FeatureAtt(in_channels*4, feat_channels)
+        self.feature_att_up_1 = FeatureAtt(in_channels*2, feat_channels)
+        self.feature_att_out = FeatureAtt(in_channels, feat_channels)
+        
+    def forward(self, x, features):
+        """
+        Args:
+            x: (B, C, D, H, W) cost volume
+            features: (B, feat_channels, H, W) 2D feature for attention
+        """
+        # Save input size for skip connections
+        x_size = x.shape[2:]  # (D, H, W)
+        
+        # Downsample features to match each level
+        feat_1x = features  # Original resolution
+        feat_2x = F.avg_pool2d(features, 2)  # 1/2 resolution
+        feat_4x = F.avg_pool2d(feat_2x, 2)  # 1/4 resolution
+        
+        # Encoder
+        conv1 = self.conv1(x)  # stride=2 -> 1/2 size
+        conv1_size = conv1.shape[2:]  # Save for skip connection
+        conv1 = self.feature_att_1(conv1, feat_2x)
+        
+        conv2 = self.conv2(conv1)  # stride=2 -> 1/4 size
+        conv2 = self.feature_att_2(conv2, feat_4x)
+        
+        # Decoder with skip connections
+        # Upsample to match conv1 size
+        conv2_up = self.conv2_up(conv2)
+        conv2_up = F.interpolate(conv2_up, size=conv1_size, mode='trilinear', align_corners=False)
+        conv1 = torch.cat((conv2_up, conv1), dim=1)
+        conv1 = self.agg_1(conv1)
+        conv1 = self.feature_att_up_1(conv1, feat_2x)
+        
+        # Upsample to match input size
+        conv1_up = self.conv1_up(conv1)
+        conv1_up = F.interpolate(conv1_up, size=x_size, mode='trilinear', align_corners=False)
+        out = torch.cat((conv1_up, x), dim=1)
+        out = self.agg_0(out)
+        out = self.feature_att_out(out, feat_1x)
+        
+        return out
+
+
 class Feat_transfer_cnet(nn.Module):
     def __init__(self, dim_list, output_dim):
         super(Feat_transfer_cnet, self).__init__()
@@ -677,6 +765,9 @@ class MonsterV2(nn.Module):
         self.ndisps = getattr(args, 'ndisps', [15, 13])  # For 1/8, 1/4 scales
         self.disp_intervals = getattr(args, 'disp_intervals', [2, 1])  # Pixel spacing
         
+        # Encoder scale: 1.0 = full resolution, 0.5 = half resolution
+        self.encoder_scale = getattr(args, 'encoder_scale', 1.0)
+        
         context_dims = args.hidden_dims[::-1]
         
         # Mono depth model configs
@@ -776,13 +867,22 @@ class MonsterV2(nn.Module):
             BasicConv(16, 16, is_3d=True, bn=True, relu=True, kernel_size=3, padding=1),
             BasicConv(16, 8, is_3d=True, bn=True, relu=True, kernel_size=3, padding=1)
         )
-        self.cost_agg_4x = nn.Sequential(
-            BasicConv(8, 16, is_3d=True, bn=True, relu=True, kernel_size=3, padding=1),
-            BasicConv(16, 32, is_3d=True, bn=True, relu=True, kernel_size=3, padding=1),
-            BasicConv(32, 32, is_3d=True, bn=True, relu=True, kernel_size=3, padding=1),
-            BasicConv(32, 16, is_3d=True, bn=True, relu=True, kernel_size=3, padding=1),
-            BasicConv(16, 8, is_3d=True, bn=True, relu=True, kernel_size=3, padding=1)
-        )
+        
+        # Option for full hourglass at 1/4 scale for higher accuracy
+        self.use_hourglass_4x = getattr(args, 'use_hourglass_4x', False)
+        if self.use_hourglass_4x:
+            # Local hourglass with feature attention - designed for local cost volumes
+            self.cost_agg_4x = hourglass_local(8, feat_channels=96)
+            print("Using local hourglass at 1/4 scale for higher accuracy")
+        else:
+            # Simple 3D conv stack - faster but less accurate
+            self.cost_agg_4x = nn.Sequential(
+                BasicConv(8, 16, is_3d=True, bn=True, relu=True, kernel_size=3, padding=1),
+                BasicConv(16, 32, is_3d=True, bn=True, relu=True, kernel_size=3, padding=1),
+                BasicConv(32, 32, is_3d=True, bn=True, relu=True, kernel_size=3, padding=1),
+                BasicConv(32, 16, is_3d=True, bn=True, relu=True, kernel_size=3, padding=1),
+                BasicConv(16, 8, is_3d=True, bn=True, relu=True, kernel_size=3, padding=1)
+            )
         self.classifier = nn.Conv3d(8, 1, 3, 1, 1, bias=False)
         
         # Disparity upsampling
@@ -924,17 +1024,33 @@ class MonsterV2(nn.Module):
         self.std = torch.tensor(std)
 
     def infer_mono(self, image1, image2):
-        """Extract mono depth and multi-scale features."""
-        height_ori, width_ori = image1.shape[2:]
+        """Extract mono depth and multi-scale features.
         
-        if 'dinov3' in self.args.encoder:
-            resize_image1, resize_image2 = image1, image2
-            patch_size = 16
+        When encoder_scale < 1.0, runs encoder at reduced resolution for speed.
+        """
+        batch_size, _, height_ori, width_ori = image1.shape
+        
+        # Apply encoder scale if configured
+        if self.encoder_scale < 1.0:
+            # Scale down for encoder
+            scaled_h = int(height_ori * self.encoder_scale)
+            scaled_w = int(width_ori * self.encoder_scale)
+            # Make divisible by patch size
+            patch_size = 16 if 'dinov3' in self.args.encoder else 14
+            scaled_h = (scaled_h // patch_size) * patch_size
+            scaled_w = (scaled_w // patch_size) * patch_size
+            resize_image1 = F.interpolate(image1, size=(scaled_h, scaled_w), mode='bilinear', align_corners=True)
+            resize_image2 = F.interpolate(image2, size=(scaled_h, scaled_w), mode='bilinear', align_corners=True)
         else:
-            resize_image1 = F.interpolate(image1, scale_factor=14/16, mode='bilinear', align_corners=True)
-            resize_image2 = F.interpolate(image2, scale_factor=14/16, mode='bilinear', align_corners=True)
-            patch_size = 14
-            
+            if 'dinov3' in self.args.encoder:
+                resize_image1, resize_image2 = image1, image2
+                patch_size = 16
+            else:
+                resize_image1 = F.interpolate(image1, scale_factor=14/16, mode='bilinear', align_corners=True)
+                resize_image2 = F.interpolate(image2, scale_factor=14/16, mode='bilinear', align_corners=True)
+                patch_size = 14
+        
+        patch_size = 16 if 'dinov3' in self.args.encoder else 14
         patch_h, patch_w = resize_image1.shape[-2] // patch_size, resize_image1.shape[-1] // patch_size
         
         # Batch left and right images for efficiency
@@ -955,10 +1071,29 @@ class MonsterV2(nn.Module):
         
         depth_mono = self.mono_decoder(features_left_encoder, patch_h, patch_w)
         depth_mono = F.relu(depth_mono)
+        # Always upsample to original resolution
         depth_mono = F.interpolate(depth_mono, size=(height_ori, width_ori), mode='bilinear', align_corners=False)
         
         features_left = self.feat_decoder(features_left_encoder, patch_h, patch_w)
         features_right = self.feat_decoder(features_right_encoder, patch_h, patch_w)
+        
+        # When using encoder_scale < 1.0, upsample features to expected sizes
+        if self.encoder_scale < 1.0:
+            # Expected sizes: 1/4, 1/8, 1/16, 1/32 of original
+            target_sizes = [
+                (height_ori // 4, width_ori // 4),
+                (height_ori // 8, width_ori // 8),
+                (height_ori // 16, width_ori // 16),
+                (height_ori // 32, width_ori // 32),
+            ]
+            features_left = [
+                F.interpolate(feat, size=target_sizes[i], mode='bilinear', align_corners=False)
+                for i, feat in enumerate(features_left)
+            ]
+            features_right = [
+                F.interpolate(feat, size=target_sizes[i], mode='bilinear', align_corners=False)
+                for i, feat in enumerate(features_right)
+            ]
         
         return depth_mono, list(features_left), list(features_right)
     
@@ -1084,7 +1219,11 @@ class MonsterV2(nn.Module):
                 if scale_idx == 1:
                     geo_encoding_volume = self.cost_agg_8x(gwc_volume)
                 else:
-                    geo_encoding_volume = self.cost_agg_4x(gwc_volume)
+                    # 1/4 scale: use hourglass with features if enabled
+                    if self.use_hourglass_4x:
+                        geo_encoding_volume = self.cost_agg_4x(gwc_volume, feat_left)
+                    else:
+                        geo_encoding_volume = self.cost_agg_4x(gwc_volume)
                 cur_disp = disp_next
             
             del gwc_volume

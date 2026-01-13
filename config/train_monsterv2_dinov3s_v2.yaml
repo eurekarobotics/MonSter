@@ -38,12 +38,14 @@ seed: 666
 use_hierarchical: True
 
 # GRU iterations per scale [1/16, 1/8, 1/4]
-# [2,2,4]=8 iters -> 400% faster, [4,4,8]=16 iters -> 200% faster with better accuracy
 scale_iters: [4, 4, 8]
 
 # Local cost volume settings for finer scales (1/8, 1/4)
 ndisps: [21, 17]           # Number of disparity samples
 disp_intervals: [1.5, 0.75]     # Pixel spacing between samples
 
-# REMP refinement (optional, set to false for pure hierarchical style)
+# REMP refinement
 use_remp: True
+
+# Encoder resolution scale (1.0 = full, 0.5 = half)
+encoder_scale: 1.0

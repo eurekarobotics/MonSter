@@ -1,16 +1,16 @@
 wandb: {}
-project_name: monsterv2-dinov3s
+project_name: monsterv2-dinov3s-v3
 restore_ckpt: null
-logdir: './checkpoints/monsterv2-dinov3s/'
+logdir: './checkpoints/monsterv2-dinov3s-v3/'
 encoder: 'dinov3_vits14'
 batch_size: 2
 gradient_accumulation_steps: 2
 train_datasets: ['mixed']
 lr: 5e-5
 wdecay: 1e-5
-total_step: 400000
+total_step: 450000
 save_frequency: 1000
-save_path: './checkpoints/monsterv2-dinov3s/'
+save_path: './checkpoints/monsterv2-dinov3s-v3/'
 val_frequency: 1000
 image_size: [480, 640]
 train_iters: 8  # Ignored for hierarchical, uses scale_iters instead
@@ -38,14 +38,17 @@ seed: 666
 use_hierarchical: True
 
 # GRU iterations per scale [1/16, 1/8, 1/4]
-scale_iters: [2, 2, 4]
+scale_iters: [4, 4, 8]
 
 # Local cost volume settings for finer scales (1/8, 1/4)
-ndisps: [15, 13]           # Number of disparity samples
-disp_intervals: [2, 1]     # Pixel spacing between samples
+ndisps: [21, 17]           # Number of disparity samples
+disp_intervals: [1.5, 0.75]     # Pixel spacing between samples
 
 # REMP refinement
 use_remp: True
+
+# Use hourglass network at 1/4 scale for higher accuracy
+use_hourglass_4x: True
 
 # Encoder resolution scale (1.0 = full, 0.5 = half)
 encoder_scale: 1.0
