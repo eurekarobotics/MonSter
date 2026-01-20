@@ -113,7 +113,7 @@ def precompute_rope_embeddings(model, input_height, input_width, patch_size=16):
     return model
 
 
-def export_to_onnx(checkpoint_path, config_path, output_path, input_shape=(1, 6, 480, 640), iters=32, use_v2=False):
+def export_to_onnx(checkpoint_path, config_path, output_path, input_shape=(1, 6, 480, 640), iters=32, use_v2=False, scale_iters=None):
     """
     Export trained Monster/MonsterV2 stereo model to ONNX format
     
@@ -122,8 +122,10 @@ def export_to_onnx(checkpoint_path, config_path, output_path, input_shape=(1, 6,
         config_path: Path to the model configuration file
         output_path: Output path for the ONNX model
         input_shape: Input tensor shape (batch_size, channels, height, width)
-        iters: Number of iterations (for Monster, MonsterV2 uses scale_iters from config)
+        iters: Number of iterations (for Monster only)
         use_v2: If True, use MonsterV2 (hierarchical) instead of Monster
+        scale_iters: List of iterations per scale for MonsterV2 [1/16, 1/8, 1/4], e.g. [2, 2, 4]
+                     If provided, overrides the config's scale_iters
     """
     
     # Load configuration
@@ -132,7 +134,12 @@ def export_to_onnx(checkpoint_path, config_path, output_path, input_shape=(1, 6,
     # Initialize model
     if use_v2:
         print("Using MonsterV2 (hierarchical) model")
+        # Override scale_iters in config if provided
+        if scale_iters is not None:
+            cfg.scale_iters = scale_iters
+            print(f"Overriding scale_iters from command line: {scale_iters}")
         model = MonsterV2(cfg, export_onnx=True)
+        print(f"MonsterV2 scale_iters: {model.scale_iters}")
     else:
         print("Using Monster (original) model")
         model = Monster(cfg, export_onnx=True)
@@ -232,11 +239,17 @@ def main():
     parser.add_argument('--output', required=True, help='Output ONNX file path')
     parser.add_argument('--height', type=int, default=480, help='Input height')
     parser.add_argument('--width', type=int, default=640, help='Input width')
-    parser.add_argument('--iters', type=int, default=20, help='Number of iterations for disparity prediction')
+    parser.add_argument('--iters', type=int, default=20, help='Number of iterations for disparity prediction (Monster only)')
+    parser.add_argument('--scale-iters', type=int, nargs='+', default=None, 
+                        help='Iterations per scale for MonsterV2 [1/16, 1/8, 1/4], e.g. --scale-iters 4 4 8. Overrides config.')
     parser.add_argument('--v2', action='store_true', help='Use MonsterV2 (hierarchical) instead of Monster')
     
     args = parser.parse_args()
     print(f"Arguments: {args}")
+    
+    # Validate scale_iters for v2
+    if args.scale_iters is not None and len(args.scale_iters) != 3:
+        raise ValueError(f"--scale-iters must have exactly 3 values [1/16, 1/8, 1/4], got {len(args.scale_iters)}")
     
     input_shape = (1, 6, args.height, args.width)
     
@@ -246,7 +259,8 @@ def main():
         output_path=args.output,
         input_shape=input_shape,
         iters=args.iters,
-        use_v2=args.v2
+        use_v2=args.v2,
+        scale_iters=args.scale_iters
     )
 
 if __name__ == '__main__':
