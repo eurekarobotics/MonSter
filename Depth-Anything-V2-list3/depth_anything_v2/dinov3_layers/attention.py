@@ -118,6 +118,7 @@ class SelfAttention(nn.Module):
         head_dim = q.shape[-1]
         scale_factor = head_dim ** -0.25  # = (1/sqrt(d))^0.5
         logging.debug("[FP16-SAFE] Using pre-scaled attention (head_dim=%d, scale=%.4f)", head_dim, scale_factor)
+        print("############"*1000)
         q = q * scale_factor
         k = k * scale_factor
         
