@@ -44,6 +44,7 @@ class Mlp(nn.Module, ListForwardMixin):
         x = self.act(x)
         x = self.drop(x)
         x = self.fc2(x)
+        x = x.clamp(min=-65504, max=65504)  # FP16-safe: prevent overflow
         x = self.drop(x)
         return x
 
