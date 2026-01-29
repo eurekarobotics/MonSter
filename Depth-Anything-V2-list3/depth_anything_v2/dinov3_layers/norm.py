@@ -5,6 +5,7 @@
 # the terms of the DINOv3 License Agreement.
 
 import torch
+import torch.nn.functional as F
 from torch import Tensor, nn
 
 class RMSNorm(nn.Module):
@@ -25,3 +26,26 @@ class RMSNorm(nn.Module):
     def forward(self, x: Tensor) -> Tensor:
         output = self._norm(x).type_as(x)
         return output * self.weight
+
+
+class FP16SafeLayerNorm(nn.LayerNorm):
+    """LayerNorm with FP32 statistics computation for FP16 stability.
+    
+    This is weight-compatible with nn.LayerNorm - existing checkpoints
+    can be loaded directly without any modification.
+    
+    The mean and variance are computed in FP32 to avoid precision loss
+    when working with large embedding dimensions (e.g., 1024 for vitl).
+    """
+    def forward(self, x: Tensor) -> Tensor:
+        orig_dtype = x.dtype
+        # Compute LayerNorm in FP32 for numerical stability
+        x = F.layer_norm(
+            x.float(), 
+            self.normalized_shape, 
+            self.weight.float() if self.weight is not None else None,
+            self.bias.float() if self.bias is not None else None, 
+            self.eps
+        )
+        return x.to(orig_dtype)
+

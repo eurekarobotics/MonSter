@@ -11,6 +11,7 @@ from .utils import cat_keep_shapes, uncat_with_shapes
 from .attention import SelfAttention
 from .mlp import Mlp
 from .layer_scale import LayerScale
+from .norm import FP16SafeLayerNorm
 
 class SelfAttentionBlock(nn.Module):
     def __init__(
@@ -26,7 +27,7 @@ class SelfAttentionBlock(nn.Module):
         init_values=None,
         drop_path: float = 0.0,
         act_layer: Callable[..., nn.Module] = nn.GELU,
-        norm_layer: Callable[..., nn.Module] = nn.LayerNorm,
+        norm_layer: Callable[..., nn.Module] = FP16SafeLayerNorm,  # FP16-safe default
         attn_class: Callable[..., nn.Module] = SelfAttention,
         ffn_layer: Callable[..., nn.Module] = Mlp,
         mask_k_bias: bool = False,
