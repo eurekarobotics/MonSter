@@ -109,6 +109,16 @@ class SelfAttention(nn.Module):
         # Always apply rope (DINOv3 always uses rope embeddings)
         # Removing conditional avoids ONNX If nodes that TensorRT cannot handle
         q, k = self.apply_rope(q, k, rope)
-        x = torch.nn.functional.scaled_dot_product_attention(q, k, v)
+        
+        # FP16-safe: pre-scale Q and K to prevent overflow in Q@K^T
+        # Instead of computing (Q @ K^T) * scale where scale = 1/sqrt(d),
+        # we compute (Q * sqrt(scale)) @ (K * sqrt(scale))^T which is equivalent
+        # but keeps intermediate values smaller and within FP16 range
+        head_dim = q.shape[-1]
+        scale_factor = head_dim ** -0.25  # = (1/sqrt(d))^0.5
+        q = q * scale_factor
+        k = k * scale_factor
+        
+        x = torch.nn.functional.scaled_dot_product_attention(q, k, v, scale=1.0)
         x = x.transpose(1, 2)
         return x.reshape([B, N, C])
