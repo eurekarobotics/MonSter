@@ -9,6 +9,6 @@ from .block import SelfAttentionBlock
 from .mlp import Mlp, SwiGLUFFN
 from .layer_scale import LayerScale
 from .patch_embed import PatchEmbed
-from .norm import RMSNorm
+from .norm import RMSNorm, FP16SafeLayerNorm
 from .rope import RopePositionEmbedding
 from .utils import named_apply

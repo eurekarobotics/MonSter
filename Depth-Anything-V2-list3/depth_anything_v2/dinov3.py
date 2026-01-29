@@ -24,6 +24,7 @@ from .dinov3_layers import (
     Mlp,
     PatchEmbed,
     RMSNorm,
+    FP16SafeLayerNorm,
     RopePositionEmbedding,
     SelfAttentionBlock,
     SwiGLUFFN,
@@ -45,8 +46,8 @@ ffn_layer_dict = {
 }
 
 norm_layer_dict = {
-    "layernorm": partial(nn.LayerNorm, eps=1e-6),
-    "layernormbf16": partial(nn.LayerNorm, eps=1e-5),
+    "layernorm": partial(FP16SafeLayerNorm, eps=1e-6),
+    "layernormbf16": partial(FP16SafeLayerNorm, eps=1e-5),
     "rmsnorm": RMSNorm,
 }
 
