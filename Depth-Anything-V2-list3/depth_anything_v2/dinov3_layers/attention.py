@@ -5,6 +5,7 @@
 # the terms of the DINOv3 License Agreement.
 
 import math
+import logging
 from typing import List, Tuple
 import torch
 import torch.nn.functional as F
@@ -116,6 +117,7 @@ class SelfAttention(nn.Module):
         # but keeps intermediate values smaller and within FP16 range
         head_dim = q.shape[-1]
         scale_factor = head_dim ** -0.25  # = (1/sqrt(d))^0.5
+        logging.debug("[FP16-SAFE] Using pre-scaled attention (head_dim=%d, scale=%.4f)", head_dim, scale_factor)
         q = q * scale_factor
         k = k * scale_factor
         

@@ -4,6 +4,7 @@
 # This software may be used and distributed in accordance with
 # the terms of the DINOv3 License Agreement.
 
+import logging
 from typing import Callable, List, Optional
 import torch
 import torch.nn.functional as F
@@ -21,6 +22,8 @@ class ListForwardMixin(object):
 
 
 class Mlp(nn.Module, ListForwardMixin):
+    _logged = False  # Class-level flag to log only once
+    
     def __init__(
         self,
         in_features: int,
@@ -38,6 +41,10 @@ class Mlp(nn.Module, ListForwardMixin):
         self.act = act_layer()
         self.fc2 = nn.Linear(hidden_features, out_features, bias=bias, device=device)
         self.drop = nn.Dropout(drop)
+        
+        if not Mlp._logged:
+            logging.info("[FP16-SAFE] Using MLP with FP16 output clamping")
+            Mlp._logged = True
 
     def forward(self, x: Tensor) -> Tensor:
         x = self.fc1(x)

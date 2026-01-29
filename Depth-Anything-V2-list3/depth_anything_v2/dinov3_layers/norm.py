@@ -4,6 +4,7 @@
 # This software may be used and distributed in accordance with
 # the terms of the DINOv3 License Agreement.
 
+import logging
 import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
@@ -37,6 +38,13 @@ class FP16SafeLayerNorm(nn.LayerNorm):
     The mean and variance are computed in FP32 to avoid precision loss
     when working with large embedding dimensions (e.g., 1024 for vitl).
     """
+    _logged = False  # Class-level flag to log only once
+    
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if not FP16SafeLayerNorm._logged:
+            logging.info("[FP16-SAFE] Using FP16SafeLayerNorm with FP32 statistics computation")
+            FP16SafeLayerNorm._logged = True
     def forward(self, x: Tensor) -> Tensor:
         orig_dtype = x.dtype
         # Compute LayerNorm in FP32 for numerical stability
